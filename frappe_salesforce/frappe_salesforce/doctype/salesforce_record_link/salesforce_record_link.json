@@ -1,0 +1,41 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-01-01 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "salesforce_id",
+  "salesforce_object",
+  "frappe_doctype",
+  "frappe_name",
+  "sb_status",
+  "sf_system_modstamp",
+  "last_synced_at",
+  "sync_status",
+  "error_message"
+ ],
+ "fields": [
+  {"fieldname": "salesforce_id", "fieldtype": "Data", "label": "Salesforce ID", "reqd": 1, "in_list_view": 1, "in_standard_filter": 1, "search_index": 1},
+  {"fieldname": "salesforce_object", "fieldtype": "Data", "label": "Salesforce Object", "reqd": 1, "in_list_view": 1, "in_standard_filter": 1, "search_index": 1},
+  {"fieldname": "frappe_doctype", "fieldtype": "Link", "options": "DocType", "label": "Frappe DocType", "in_list_view": 1},
+  {"fieldname": "frappe_name", "fieldtype": "Dynamic Link", "options": "frappe_doctype", "label": "Frappe Record", "in_list_view": 1},
+  {"fieldname": "sb_status", "fieldtype": "Section Break", "label": "Status"},
+  {"fieldname": "sf_system_modstamp", "fieldtype": "Datetime", "label": "SF SystemModstamp"},
+  {"fieldname": "last_synced_at", "fieldtype": "Datetime", "label": "Last Synced At"},
+  {"fieldname": "sync_status", "fieldtype": "Select", "options": "\nSynced\nFailed\nSkipped", "label": "Sync Status", "default": "Synced", "in_standard_filter": 1},
+  {"fieldname": "error_message", "fieldtype": "Long Text", "label": "Error Message"}
+ ],
+ "links": [],
+ "modified": "2026-01-01 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Frappe Salesforce",
+ "name": "Salesforce Record Link",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "delete": 1, "email": 1, "export": 1, "print": 1, "read": 1, "role": "System Manager", "share": 1, "write": 1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 0
+}

@@ -1,0 +1,40 @@
+{
+ "charts": [],
+ "content": "[{\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Salesforce Integration</b></span>\",\"col\":12}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Salesforce Settings\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Salesforce Field Mapping\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Salesforce Sync Log\",\"col\":3}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Salesforce Record Link\",\"col\":3}}]",
+ "creation": "2026-01-01 00:00:00",
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "for_user": "",
+ "hide_custom": 0,
+ "icon": "crm",
+ "idx": 0,
+ "is_hidden": 0,
+ "label": "Frappe Salesforce",
+ "links": [
+  {"hidden": 0, "is_query_report": 0, "label": "Configuration", "link_count": 0, "onboard": 0, "type": "Card Break"},
+  {"dependencies": "", "hidden": 0, "is_query_report": 0, "label": "Salesforce Settings", "link_count": 0, "link_to": "Salesforce Settings", "link_type": "DocType", "onboard": 1, "type": "Link"},
+  {"dependencies": "", "hidden": 0, "is_query_report": 0, "label": "Salesforce Field Mapping", "link_count": 0, "link_to": "Salesforce Field Mapping", "link_type": "DocType", "onboard": 1, "type": "Link"},
+  {"hidden": 0, "is_query_report": 0, "label": "Monitoring", "link_count": 0, "onboard": 0, "type": "Card Break"},
+  {"dependencies": "", "hidden": 0, "is_query_report": 0, "label": "Salesforce Sync Log", "link_count": 0, "link_to": "Salesforce Sync Log", "link_type": "DocType", "onboard": 0, "type": "Link"},
+  {"dependencies": "", "hidden": 0, "is_query_report": 0, "label": "Salesforce Record Link", "link_count": 0, "link_to": "Salesforce Record Link", "link_type": "DocType", "onboard": 0, "type": "Link"}
+ ],
+ "modified": "2026-01-01 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Frappe Salesforce",
+ "name": "Frappe Salesforce",
+ "number_cards": [],
+ "owner": "Administrator",
+ "parent_page": "",
+ "public": 1,
+ "quick_lists": [],
+ "restrict_to_domain": "",
+ "roles": [],
+ "sequence_id": 100,
+ "shortcuts": [
+  {"color": "Blue", "doc_view": "", "label": "Salesforce Settings", "link_to": "Salesforce Settings", "stats_filter": "{}", "type": "DocType"},
+  {"color": "Grey", "doc_view": "List", "label": "Salesforce Field Mapping", "link_to": "Salesforce Field Mapping", "stats_filter": "{}", "type": "DocType"},
+  {"color": "Green", "doc_view": "List", "label": "Salesforce Sync Log", "link_to": "Salesforce Sync Log", "stats_filter": "{\"status\":[\"in\",[\"Success\",\"Partial\",\"Failed\"]]}", "type": "DocType"},
+  {"color": "Cyan", "doc_view": "List", "label": "Salesforce Record Link", "link_to": "Salesforce Record Link", "stats_filter": "{}", "type": "DocType"}
+ ],
+ "title": "Frappe Salesforce"
+}

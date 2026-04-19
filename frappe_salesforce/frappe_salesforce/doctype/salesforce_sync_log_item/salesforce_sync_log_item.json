@@ -1,0 +1,37 @@
+{
+ "actions": [],
+ "creation": "2026-01-01 00:00:00",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "salesforce_object",
+  "fetched",
+  "created",
+  "updated",
+  "skipped",
+  "failed",
+  "soql",
+  "error_summary"
+ ],
+ "fields": [
+  {"fieldname": "salesforce_object", "fieldtype": "Data", "label": "Object", "in_list_view": 1, "columns": 2},
+  {"fieldname": "fetched", "fieldtype": "Int", "label": "Fetched", "default": "0", "in_list_view": 1, "columns": 1},
+  {"fieldname": "created", "fieldtype": "Int", "label": "Created", "default": "0", "in_list_view": 1, "columns": 1},
+  {"fieldname": "updated", "fieldtype": "Int", "label": "Updated", "default": "0", "in_list_view": 1, "columns": 1},
+  {"fieldname": "skipped", "fieldtype": "Int", "label": "Skipped", "default": "0", "in_list_view": 1, "columns": 1},
+  {"fieldname": "failed", "fieldtype": "Int", "label": "Failed", "default": "0", "in_list_view": 1, "columns": 1},
+  {"fieldname": "soql", "fieldtype": "Small Text", "label": "SOQL"},
+  {"fieldname": "error_summary", "fieldtype": "Small Text", "label": "Error Summary"}
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-01-01 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Frappe Salesforce",
+ "name": "Salesforce Sync Log Item",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC"
+}
