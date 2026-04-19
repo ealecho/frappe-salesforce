@@ -27,6 +27,7 @@ frappe.ui.form.on("Salesforce Settings", {
         frm.add_custom_button(__("Diagnose JWT"), () => {
             frappe.call({
                 method: "frappe_salesforce.api.connection.diagnose",
+                args: { include_assertion: 1 },
                 callback: (r) => {
                     if (!r.message) return;
                     if (!r.message.ok) {
@@ -42,12 +43,30 @@ frappe.ui.form.on("Salesforce Settings", {
                         .map(([k, v]) => `<tr><td><b>${k}</b></td><td><code>${v}</code></td></tr>`)
                         .join("");
                     const notes = (m.notes || []).map((n) => `<li>${n}</li>`).join("");
+                    const fp = m.public_key_fingerprint;
+                    const fpBlock = fp
+                        ? `
+                            <h5>Public Key Fingerprint (from your private key)</h5>
+                            <p><b>SHA-256 (colon-hex):</b><br/><code style="word-break:break-all">${fp.sha256_colon_hex}</code></p>
+                            <p><b>SHA-256 (base64):</b> <code>${fp.sha256_base64}</code></p>
+                            <p><i>${m.fingerprint_help || ""}</i></p>
+                        `
+                        : `<p style="color:#c00">${m.public_key_fingerprint_error || ""}</p>`;
+                    const asn = m.signed_assertion
+                        ? `
+                            <h5>Signed JWT Assertion</h5>
+                            <p><i>${m.assertion_help || ""}</i></p>
+                            <textarea readonly style="width:100%;height:80px;font-family:monospace;font-size:11px">${m.signed_assertion}</textarea>
+                        `
+                        : "";
                     frappe.msgprint({
                         title: __("JWT Claim Preview"),
                         message: `
                             <p><b>Token URL:</b> <code>${m.token_url}</code></p>
                             <table class="table table-bordered">${rows}</table>
+                            ${fpBlock}
                             <ul>${notes}</ul>
+                            ${asn}
                         `,
                         indicator: "blue",
                         wide: true,

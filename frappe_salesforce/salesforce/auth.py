@@ -12,6 +12,8 @@ Docs:
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import time
 
@@ -85,6 +87,49 @@ class SalesforceAuth:
             "iat": issued_at,
         }
 
+    def sign_assertion(self, claim: dict | None = None) -> str:
+        """Return a signed JWT assertion. Exposed for diagnostics.
+
+        Use jwt.io (paste the token + your .crt) to verify the signature
+        independently of Salesforce.
+        """
+        if claim is None:
+            claim = self.build_claim()
+        private_key = self._load_private_key()
+        try:
+            return jwt.encode(claim, private_key, algorithm="RS256")
+        except Exception as e:
+            raise SalesforceAuthError(f"Failed to sign JWT assertion: {e}") from e
+
+    def public_key_fingerprint(self) -> dict:
+        """Derive the public key from the configured private key and return
+        SHA-256 fingerprints in several formats.
+
+        Compare one of these against the fingerprint Salesforce shows for
+        the certificate you uploaded to the External Client App. If they
+        differ, the private key in Settings does NOT match the uploaded
+        cert and JWT signing will always fail with ``invalid_grant``.
+        """
+        try:
+            from cryptography.hazmat.primitives import serialization
+        except ImportError as e:
+            raise SalesforceConfigurationError(
+                "cryptography package is required for fingerprint diagnostics"
+            ) from e
+
+        pem = self._load_private_key().encode("utf-8")
+        private = serialization.load_pem_private_key(pem, password=None)
+        public_der = private.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        digest = hashlib.sha256(public_der).digest()
+        return {
+            "sha256_hex": digest.hex(),
+            "sha256_colon_hex": ":".join(f"{b:02x}" for b in digest),
+            "sha256_base64": base64.b64encode(digest).decode("ascii"),
+        }
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
@@ -141,13 +186,8 @@ class SalesforceAuth:
         return key
 
     def _fetch_new_token(self) -> tuple[str, str]:
-        private_key = self._load_private_key()
         claim = self.build_claim()
-
-        try:
-            assertion = jwt.encode(claim, private_key, algorithm="RS256")
-        except Exception as e:
-            raise SalesforceAuthError(f"Failed to sign JWT assertion: {e}") from e
+        assertion = self.sign_assertion(claim)
 
         url = self._token_url()
         try:
