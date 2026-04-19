@@ -18,3 +18,10 @@ node_modules/
 .coverage
 htmlcov/
 .ruff_cache/
+
+# Secrets — never commit private keys or certs generated for local testing
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx

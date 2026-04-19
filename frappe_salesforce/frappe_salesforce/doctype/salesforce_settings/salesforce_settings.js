@@ -24,6 +24,38 @@ frappe.ui.form.on("Salesforce Settings", {
             });
         });
 
+        frm.add_custom_button(__("Diagnose JWT"), () => {
+            frappe.call({
+                method: "frappe_salesforce.api.connection.diagnose",
+                callback: (r) => {
+                    if (!r.message) return;
+                    if (!r.message.ok) {
+                        frappe.msgprint({
+                            title: __("Configuration Problem"),
+                            message: r.message.error,
+                            indicator: "red",
+                        });
+                        return;
+                    }
+                    const m = r.message;
+                    const rows = Object.entries(m.claim)
+                        .map(([k, v]) => `<tr><td><b>${k}</b></td><td><code>${v}</code></td></tr>`)
+                        .join("");
+                    const notes = (m.notes || []).map((n) => `<li>${n}</li>`).join("");
+                    frappe.msgprint({
+                        title: __("JWT Claim Preview"),
+                        message: `
+                            <p><b>Token URL:</b> <code>${m.token_url}</code></p>
+                            <table class="table table-bordered">${rows}</table>
+                            <ul>${notes}</ul>
+                        `,
+                        indicator: "blue",
+                        wide: true,
+                    });
+                },
+            });
+        });
+
         frm.add_custom_button(__("Sync Now"), () => {
             frappe.call({
                 method: "frappe_salesforce.api.sync.trigger_manual_sync",
