@@ -39,56 +39,118 @@ This integration uses Salesforce **External Client Apps** (ECA) with the OAuth 2
 JWT Bearer flow. Connected Apps also work (the wire protocol is identical),
 but Salesforce is steering new integrations toward External Client Apps.
 
+**No Consumer Secret is used.** JWT Bearer flow proves identity by signing
+the assertion with your RSA private key, not by transmitting a secret.
+Leave any "Consumer Secret" field in Salesforce alone — it's for other flows.
+
 ### 1. Generate an RSA key pair
 
+On the machine where Frappe runs:
+
 ```bash
-openssl genrsa -out server.key 2048
-openssl req -new -x509 -key server.key -out server.crt -days 3650 \
+openssl genrsa -out salesforce.key 2048
+openssl req -new -x509 -key salesforce.key -out salesforce.crt -days 3650 \
     -subj "/CN=frappe-salesforce"
 ```
 
-Keep `server.key` secret — you'll paste its contents into Salesforce Settings.
-`server.crt` is what you upload to Salesforce.
+- `salesforce.key` — the private key. You paste its contents into Frappe Settings. Keep it secret.
+- `salesforce.crt` — the self-signed certificate. You upload it to Salesforce.
+
+Verify the pair matches (both hashes must be identical):
+
+```bash
+openssl x509 -in salesforce.crt -pubkey -noout | openssl sha256
+openssl rsa -in salesforce.key -pubout 2>/dev/null | openssl sha256
+```
 
 ### 2. Create an External Client App in Salesforce
 
-1. Setup → **App Manager** → **New External Client App**.
-2. Basic Information: name, contact email.
-3. **API (Enable OAuth Settings)**:
-   - Enable OAuth.
-   - Callback URL: `https://login.salesforce.com/services/oauth2/success` (unused by JWT flow but required).
-   - **Use digital signatures**: upload `server.crt`.
-   - OAuth Scopes: `Manage user data via APIs (api)`, `Perform requests at any time (refresh_token, offline_access)`.
-   - Enable **Issue JSON Web Token (JWT)-based access tokens**.
-4. Save. Open the app's **Policies** page:
-   - App Authorization: **Admin-approved users are pre-authorized**.
-   - Save.
-5. Assign the integration user's **Profile** or a dedicated **Permission Set** to the app (Policies → Profile/Permission Set related lists).
-6. Copy the **Consumer Key** from Settings → OAuth Settings.
+Setup → **External Client App Manager** → **New External Client App**.
 
-### 3. Configure Salesforce Settings in Frappe
+#### Basic Information
+- External Client App Name: e.g. `SmartOps_dev`
+- API Name: auto-filled
+- Contact Email: your admin email
+- Distribution State: set per your org's policy
 
-Open **Salesforce Settings**, fill in:
+#### App Settings → OAuth Settings
+- **Callback URL**: `http://localhost/callback` (required field; JWT Bearer flow does not use it)
+- **Selected OAuth Scopes**:
+  - `Manage user data via APIs (api)`
+  - `Perform requests at any time (refresh_token, offline_access)`
+  - Optionally `Access the identity URL service (id, profile, email, address, phone)`
+  - Avoid `Full access (full)` — prefer least-privilege
 
-- Login URL: `https://login.salesforce.com` (or `https://test.salesforce.com` for sandbox)
-- External Client App Consumer Key
-- Integration Username (exact Salesforce Username)
-- RSA Private Key (PEM) — paste the full contents of `server.key`
+#### Flow Enablement (CRITICAL)
+- ☑ **Enable JWT Bearer Flow** ← **this is required; without it Salesforce rejects every JWT with `invalid_grant: invalid assertion`**
 
-Click **Diagnose JWT** to preview the claim we'll send (no network call).
-Click **Test Connection** to actually authenticate and run a SOQL query.
+Do **not** enable Client Credentials, Device, Authorization Code, or Token Exchange flows unless you have a separate reason.
+
+#### Certificate Upload
+When you check "Enable JWT Bearer Flow", a **Certificate Upload** field appears.
+
+- Click **Select a certificate** and upload `salesforce.crt` from Step 1.
+
+#### Security
+- ☑ **Issue JSON Web Token (JWT)-based access tokens for named users** (recommended)
+- Leave PKCE, refresh-rotation etc. at defaults unless your org requires otherwise
+
+#### Save the app
+Click **Create**.
+
+### 3. Configure the Policy (pre-authorize your user)
+
+After saving, open the app again. Go to the **Policies** tab (or equivalent "Policy" section).
+
+- **OAuth Policies → App Authorization**: set to **Admin-approved users are pre-authorized**
+- Save.
+- Then assign either:
+  - **Profiles**: add the integration user's Profile to the policy, OR
+  - **Permission Sets**: add a Permission Set that's assigned to the integration user
+
+**If you skip this step, Salesforce returns `user hasn't approved consumer` in Login History** (and the generic `invalid assertion` to our app).
+
+Policy changes can take 2–10 minutes to propagate. Wait before testing.
+
+### 4. Copy the Consumer Key
+
+Open the ECA → **Settings → OAuth Settings → Consumer Key and Secret → Copy** the Consumer Key.
+
+Ignore the Consumer Secret — JWT Bearer flow does not use it.
+
+### 5. Configure Salesforce Settings in Frappe
+
+Open **Salesforce Settings** in Frappe, fill in:
+
+- **Login URL**: `https://login.salesforce.com` (production) or `https://test.salesforce.com` (sandbox)
+- **External Client App Consumer Key**: from step 4
+- **Integration Username**: the integration user's Salesforce **Username** (Setup → Users → Users → Username column). This is NOT the same as Email Alias or Nickname.
+- **RSA Private Key (PEM)**: paste the full contents of `salesforce.key` including the `-----BEGIN` / `-----END` lines
+
+Click **Diagnose JWT**:
+- Verify `iss`, `sub`, `aud` values
+- Compare **Public Key Fingerprint (SHA-256 colon-hex)** to the fingerprint Salesforce shows for your uploaded cert. They must match.
+- Optionally copy the **Signed JWT Assertion** and validate it on https://jwt.io against `salesforce.crt` — if jwt.io reports "Signature Verified", the client side is 100% correct and any remaining failure is in the ECA config.
+
+Click **Test Connection**. On success you'll see the Org Id and Name.
+
 Then check **Enabled** and save.
 
 ### Troubleshooting `invalid_grant: invalid assertion`
 
-- The integration user is not pre-authorized on the ECA policy (most common).
-- Consumer Key mismatch.
-- The certificate uploaded to the app doesn't match the private key in Settings.
-- `login_url` wrong for this org (production vs sandbox).
+This error is deliberately opaque from Salesforce. Work through these in order:
 
-After a failed **Test Connection**, open **Error Log** and look for a
-`Salesforce JWT Bearer auth failed` entry — it contains the decoded claim and
-Salesforce's full response.
+1. **Is "Enable JWT Bearer Flow" checked on the ECA?** This is the #1 cause. Go to the app → Settings → Flow Enablement.
+2. **Is the integration user pre-authorized?** Check the ECA Policy → App Authorization is "Admin-approved users are pre-authorized" AND the user's Profile or Permission Set is assigned.
+3. **Does the fingerprint match?** Click **Diagnose JWT** in Frappe and compare the SHA-256 fingerprint to Salesforce's cert fingerprint.
+4. **Is the Username exact?** Setup → Users → Users → copy the Username field value exactly. It's often NOT the user's email.
+5. **Production vs sandbox?** If `*.sandbox.my.salesforce.com` is in your browser URL, Login URL must be `https://test.salesforce.com`.
+6. **Check Setup → Login History** filtered by the integration user. The Status column shows SF's real rejection reason (far more specific than the token endpoint returns).
+7. **Wait for propagation.** After saving ECA policy changes, wait 2–10 minutes.
+
+After a failed **Test Connection**, Frappe's **Error Log** contains a
+`Salesforce JWT Bearer auth failed` entry with the decoded JWT claim and
+the full Salesforce response for offline review.
 
 ## License
 
