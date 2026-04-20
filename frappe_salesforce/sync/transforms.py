@@ -35,7 +35,8 @@ def to_date(value: Any) -> str | None:
 def to_datetime(value: Any) -> str | None:
     if not value:
         return None
-    return str(get_datetime(value))
+    dt = get_datetime(value)
+    return str(dt.replace(tzinfo=None))
 
 
 def html_strip(value: Any) -> str | None:

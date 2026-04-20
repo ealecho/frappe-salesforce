@@ -51,7 +51,7 @@ class BaseSyncer:
             extra_where=self.extra_where,
         )
         self.log.soql = soql
-        new_hwm = get_datetime(since) if since else None
+        new_hwm = get_datetime(since).replace(tzinfo=None) if since else None
         calls_before = self.client.calls_this_tick
         processed_since_checkpoint = 0
 
@@ -60,7 +60,7 @@ class BaseSyncer:
                 try:
                     self._process_record(rec)
                     self.log.fetched = (self.log.fetched or 0) + 1
-                    modstamp = get_datetime(rec["SystemModstamp"])
+                    modstamp = get_datetime(rec["SystemModstamp"]).replace(tzinfo=None)
                     if new_hwm is None or modstamp > new_hwm:
                         new_hwm = modstamp
                     processed_since_checkpoint += 1
@@ -102,7 +102,7 @@ class BaseSyncer:
         else:
             self._upsert_doc(link, values, sf_id)
 
-        link.sf_system_modstamp = get_datetime(rec["SystemModstamp"])
+        link.sf_system_modstamp = get_datetime(rec["SystemModstamp"]).replace(tzinfo=None)
         link.last_synced_at = now_datetime()
         link.sync_status = "Synced"
         link.error_message = None
