@@ -104,8 +104,8 @@ def map_user_by_email(salesforce_user_id: str | None) -> str | None:
 # ----------------------------------------------------------------------
 LEAD_STATUS_MAP = {
     "Open - Not Contacted": "New",
-    "Working - Contacted": "Working",
-    "Closed - Converted": "Qualified",
+    "Working - Contacted": "Contacted",
+    "Closed - Converted": "Converted",
     "Closed - Not Converted": "Unqualified",
 }
 
@@ -116,7 +116,26 @@ def map_lead_status(sf_status: str | None) -> str | None:
     return LEAD_STATUS_MAP.get(sf_status, sf_status)
 
 
+# PEAS NPSP stages → Frappe CRM Deal statuses.
+# Standard SF stages kept for defensive coverage.
 DEAL_STAGE_MAP = {
+    # PEAS custom stages
+    "Won": "Won",
+    "Grant Won": "Won",
+    "Donation received": "Won",
+    "Reporting Delivered": "Won",
+    "Pledged": "Ready to Close",
+    "Finalising": "Negotiation",
+    "Final stage proposal": "Negotiation",
+    "Warm proposal to existing funder": "Proposal/Quotation",
+    "Warm proposal to new funder": "Proposal/Quotation",
+    "Cold proposal or positive meeting": "Demo/Making",
+    "Research": "Qualification",
+    "Fundraising target": "Qualification",
+    "Lost": "Lost",
+    "Withdrawn": "Lost",
+    "Grant unsuccessful": "Lost",
+    # Standard SF stages (fallback)
     "Prospecting": "Qualification",
     "Qualification": "Qualification",
     "Needs Analysis": "Demo/Making",
@@ -136,6 +155,35 @@ def map_deal_stage(sf_stage: str | None) -> str | None:
     return DEAL_STAGE_MAP.get(sf_stage, sf_stage)
 
 
+TASK_STATUS_MAP = {
+    "Not Started": "Todo",
+    "In Progress": "In Progress",
+    "Completed": "Done",
+    "Deferred": "Backlog",
+    "Submitted on Time": "Done",
+    "Waiting on someone else": "Todo",
+}
+
+
+def map_task_status(sf_status: str | None) -> str | None:
+    if not sf_status:
+        return "Todo"
+    return TASK_STATUS_MAP.get(sf_status, "Todo")
+
+
+TASK_PRIORITY_MAP = {
+    "Normal": "Medium",
+    "High": "High",
+    "Low": "Low",
+}
+
+
+def map_task_priority(sf_priority: str | None) -> str | None:
+    if not sf_priority:
+        return "Medium"
+    return TASK_PRIORITY_MAP.get(sf_priority, "Medium")
+
+
 # ----------------------------------------------------------------------
 # Dispatcher
 # ----------------------------------------------------------------------
@@ -149,6 +197,8 @@ TRANSFORMS = {
     "account_lookup": map_account,
     "deal_stage": map_deal_stage,
     "lead_status": map_lead_status,
+    "task_status": map_task_status,
+    "task_priority": map_task_priority,
 }
 
 

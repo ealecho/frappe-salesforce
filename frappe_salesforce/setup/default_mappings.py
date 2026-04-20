@@ -113,8 +113,16 @@ DEFAULT_MAPPINGS: list[dict] = [
                 "frappe_field": "due_date",
                 "transform": "date",
             },
-            {"sf_field": "Status", "frappe_field": "status"},
-            {"sf_field": "Priority", "frappe_field": "priority"},
+            {
+                "sf_field": "Status",
+                "frappe_field": "status",
+                "transform": "task_status",
+            },
+            {
+                "sf_field": "Priority",
+                "frappe_field": "priority",
+                "transform": "task_priority",
+            },
             {
                 "sf_field": "OwnerId",
                 "frappe_field": "assigned_to",
