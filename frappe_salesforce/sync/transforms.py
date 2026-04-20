@@ -155,6 +155,22 @@ def map_deal_stage(sf_stage: str | None) -> str | None:
     return DEAL_STAGE_MAP.get(sf_stage, sf_stage)
 
 
+# Maps SF stages that resolve to "Lost" → a CRM Lost Reason record name.
+# Returns None for non-lost stages so the value is stripped by _upsert_doc.
+DEAL_LOST_REASON_MAP = {
+    "Lost": "Lost",
+    "Withdrawn": "Withdrawn",
+    "Grant unsuccessful": "Grant unsuccessful",
+    "Closed Lost": "Lost",
+}
+
+
+def map_deal_lost_reason(sf_stage: str | None) -> str | None:
+    if not sf_stage:
+        return None
+    return DEAL_LOST_REASON_MAP.get(sf_stage)
+
+
 TASK_STATUS_MAP = {
     "Not Started": "Todo",
     "In Progress": "In Progress",
@@ -199,6 +215,7 @@ TRANSFORMS = {
     "lead_status": map_lead_status,
     "task_status": map_task_status,
     "task_priority": map_task_priority,
+    "deal_lost_reason": map_deal_lost_reason,
 }
 
 

@@ -90,6 +90,11 @@ DEFAULT_MAPPINGS: list[dict] = [
                 "frappe_field": "status",
                 "transform": "deal_stage",
             },
+            {
+                "sf_field": "StageName",
+                "frappe_field": "lost_reason",
+                "transform": "deal_lost_reason",
+            },
             {"sf_field": "Probability", "frappe_field": "probability"},
             {
                 "sf_field": "OwnerId",
