@@ -13,7 +13,7 @@ def test_connection():
     from frappe_salesforce.salesforce.exceptions import SalesforceError
 
     try:
-        client = SalesforceClient()
+        client = SalesforceClient(bypass_budget=True)
         rec = next(client.query("SELECT Id, Name FROM Organization LIMIT 1"))
     except StopIteration:
         return {"ok": False, "error": "No Organization record returned."}

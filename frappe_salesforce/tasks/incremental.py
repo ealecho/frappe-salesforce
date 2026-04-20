@@ -6,7 +6,11 @@ import frappe
 from frappe.utils import now_datetime
 
 from frappe_salesforce.salesforce.client import SalesforceClient
-from frappe_salesforce.salesforce.exceptions import SalesforceError
+from frappe_salesforce.salesforce.exceptions import (
+    SalesforceBudgetExceeded,
+    SalesforceError,
+    SalesforceRateLimitError,
+)
 from frappe_salesforce.sync.registry import SYNCERS
 
 
@@ -17,6 +21,15 @@ class IncrementalSyncRunner:
         log = self._create_log()
         try:
             client = SalesforceClient()
+        except SalesforceBudgetExceeded as e:
+            # Preflight tripped: cached SF usage is hot. Log cleanly and
+            # bail without making any API call.
+            log.status = "Skipped"
+            log.error_summary = f"Preflight skip: {e}"
+            log.end_time = now_datetime()
+            log.save(ignore_permissions=True)
+            frappe.db.commit()
+            return log.name
         except SalesforceError as e:
             log.status = "Failed"
             log.error_summary = f"Auth failure: {e}"
@@ -26,7 +39,12 @@ class IncrementalSyncRunner:
             return log.name
 
         had_failure = False
+        budget_stop: str | None = None
         for SyncerCls in SYNCERS:
+            if budget_stop:
+                # Budget tripped earlier in this tick; skip remaining
+                # syncers so the next tick can pick up where we left off.
+                break
             item = log.append(
                 "items",
                 {
@@ -36,10 +54,18 @@ class IncrementalSyncRunner:
                     "updated": 0,
                     "skipped": 0,
                     "failed": 0,
+                    "api_calls_used": 0,
                 },
             )
             try:
                 SyncerCls(client, item).run()
+            except (SalesforceBudgetExceeded, SalesforceRateLimitError) as e:
+                budget_stop = str(e)
+                item.error_summary = str(e)[:500]
+                # Not a "failure" in the data sense — quota guardrail
+                # fired. Mark the log Partial but don't alarm.
+                had_failure = True
+                frappe.db.commit()
             except Exception as e:  # noqa: BLE001
                 had_failure = True
                 item.error_summary = str(e)[:500]
@@ -51,7 +77,11 @@ class IncrementalSyncRunner:
                 frappe.db.commit()
 
         log.end_time = now_datetime()
-        log.status = "Partial" if had_failure else "Success"
+        if budget_stop:
+            log.status = "Partial"
+            log.error_summary = f"Budget/quota guard: {budget_stop}"
+        else:
+            log.status = "Partial" if had_failure else "Success"
         log.save(ignore_permissions=True)
         frappe.db.commit()
         return log.name
