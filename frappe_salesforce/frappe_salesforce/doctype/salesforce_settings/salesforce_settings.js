@@ -67,5 +67,80 @@ frappe.ui.form.on("Salesforce Settings", {
                 },
             });
         });
+
+        frm.add_custom_button(__("API Usage"), () => {
+            frappe.call({
+                method: "frappe_salesforce.api.sync.get_api_usage",
+                callback: (r) => {
+                    if (!r.message) return;
+                    const m = r.message;
+                    const sf_pct = m.sf_limit
+                        ? ((m.sf_used / m.sf_limit) * 100).toFixed(1)
+                        : "–";
+                    const day_pct = m.per_day_budget
+                        ? ((m.app_calls_today / m.per_day_budget) * 100).toFixed(1)
+                        : "–";
+                    frappe.msgprint({
+                        title: __("API Usage"),
+                        message: `
+                            <p><b>Salesforce org quota (last observed):</b><br>
+                            ${m.sf_used} / ${m.sf_limit} (${sf_pct}%)<br>
+                            <small>observed at ${m.sf_observed_at || "never"}</small></p>
+                            <p><b>App-level daily counter:</b><br>
+                            ${m.app_calls_today} / ${m.per_day_budget} (${day_pct}%)</p>
+                            <p><b>Per-tick budget:</b> ${m.per_tick_budget}</p>
+                        `,
+                        indicator: "blue",
+                    });
+                },
+            });
+        }, __("Diagnostics"));
+
+        frm.add_custom_button(__("Backfill From Date"), () => {
+            frappe.prompt(
+                [
+                    {
+                        fieldname: "since",
+                        label: __("Backfill from (UTC datetime)"),
+                        fieldtype: "Datetime",
+                        reqd: 1,
+                        description: __(
+                            "All high-water marks will be reset to this value. " +
+                            "The next sync tick will fetch every record modified since. " +
+                            "This can consume significant API quota — use sparingly."
+                        ),
+                    },
+                ],
+                (values) => {
+                    frappe.confirm(
+                        __("Reset every high-water mark to {0}? " +
+                           "The next sync will backfill from that point.",
+                           [values.since]),
+                        () => {
+                            frappe.call({
+                                method: "frappe_salesforce.api.sync.backfill_from_date",
+                                args: { since: values.since },
+                                callback: (r) => {
+                                    if (r.message && r.message.ok) {
+                                        frappe.msgprint({
+                                            title: __("Backfill Armed"),
+                                            message: __(
+                                                "High-water marks reset to {0}. " +
+                                                "Trigger 'Sync Now' or wait for the next " +
+                                                "scheduler tick.",
+                                                [r.message.reset_to]
+                                            ),
+                                            indicator: "orange",
+                                        });
+                                    }
+                                },
+                            });
+                        }
+                    );
+                },
+                __("Backfill From Date"),
+                __("Reset High-Water Marks")
+            );
+        }, __("Danger Zone"));
     },
 });

@@ -11,6 +11,7 @@
   "updated",
   "skipped",
   "failed",
+  "api_calls_used",
   "soql",
   "error_summary"
  ],
@@ -21,6 +22,7 @@
   {"fieldname": "updated", "fieldtype": "Int", "label": "Updated", "default": "0", "in_list_view": 1, "columns": 1},
   {"fieldname": "skipped", "fieldtype": "Int", "label": "Skipped", "default": "0", "in_list_view": 1, "columns": 1},
   {"fieldname": "failed", "fieldtype": "Int", "label": "Failed", "default": "0", "in_list_view": 1, "columns": 1},
+  {"fieldname": "api_calls_used", "fieldtype": "Int", "label": "API Calls", "default": "0", "in_list_view": 1, "columns": 1},
   {"fieldname": "soql", "fieldtype": "Small Text", "label": "SOQL"},
   {"fieldname": "error_summary", "fieldtype": "Small Text", "label": "Error Summary"}
  ],

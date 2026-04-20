@@ -12,7 +12,9 @@ from frappe_salesforce.salesforce.soql import build_incremental_query
 
 from .transforms import apply_transform
 
-DEFAULT_EPOCH = "1970-01-01T00:00:00Z"
+#: Commit advanced high-water mark every N successfully processed records
+#: so a crash mid-run doesn't force reprocessing the whole page next tick.
+HWM_CHECKPOINT_EVERY = 50
 
 
 class BaseSyncer:
@@ -49,23 +51,36 @@ class BaseSyncer:
             extra_where=self.extra_where,
         )
         self.log.soql = soql
-        new_hwm = get_datetime(since)
+        new_hwm = get_datetime(since) if since else None
+        calls_before = self.client.calls_this_tick
+        processed_since_checkpoint = 0
 
-        for rec in self.client.query(soql):
-            try:
-                self._process_record(rec)
-                self.log.fetched = (self.log.fetched or 0) + 1
-                modstamp = get_datetime(rec["SystemModstamp"])
-                if modstamp > new_hwm:
-                    new_hwm = modstamp
-            except Exception as e:
-                self.log.failed = (self.log.failed or 0) + 1
-                frappe.log_error(
-                    title=f"SF sync {self.salesforce_object} record {rec.get('Id')}",
-                    message=frappe.get_traceback() or str(e),
-                )
-
-        self._set_high_water_mark(new_hwm)
+        try:
+            for rec in self.client.query(soql):
+                try:
+                    self._process_record(rec)
+                    self.log.fetched = (self.log.fetched or 0) + 1
+                    modstamp = get_datetime(rec["SystemModstamp"])
+                    if new_hwm is None or modstamp > new_hwm:
+                        new_hwm = modstamp
+                    processed_since_checkpoint += 1
+                    if processed_since_checkpoint >= HWM_CHECKPOINT_EVERY:
+                        self._set_high_water_mark(new_hwm)
+                        frappe.db.commit()
+                        processed_since_checkpoint = 0
+                except Exception as e:
+                    self.log.failed = (self.log.failed or 0) + 1
+                    frappe.log_error(
+                        title=f"SF sync {self.salesforce_object} record {rec.get('Id')}",
+                        message=frappe.get_traceback() or str(e),
+                    )
+        finally:
+            # Always record API calls spent by this syncer and persist the
+            # latest HWM we safely reached — even if the loop aborted due
+            # to a budget/quota exception higher up the stack.
+            self.log.api_calls_used = self.client.calls_this_tick - calls_before
+            if new_hwm is not None:
+                self._set_high_water_mark(new_hwm)
 
     # ------------------------------------------------------------------
     # Per-record processing
@@ -176,7 +191,10 @@ class BaseSyncer:
             value = self.settings.get(self.high_water_field)
             if value:
                 return str(value)
-        return DEFAULT_EPOCH
+        # No HWM configured: start from "now" so we never accidentally
+        # backfill from epoch. Users who want historical data use the
+        # explicit "Backfill From Date" action on Salesforce Settings.
+        return str(now_datetime())
 
     def _set_high_water_mark(self, value) -> None:
         if not self.high_water_field:

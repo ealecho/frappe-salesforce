@@ -1,1 +1,2 @@
 frappe_salesforce.patches.v0_0_1.add_custom_salesforce_id_fields
+frappe_salesforce.patches.v0_0_1.seed_quota_safety_defaults
