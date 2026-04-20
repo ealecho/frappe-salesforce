@@ -57,7 +57,11 @@ DEFAULT_MAPPINGS: list[dict] = [
             {"sf_field": "MobilePhone", "frappe_field": "mobile_no"},
             {"sf_field": "Title", "frappe_field": "job_title"},
             {"sf_field": "LeadSource", "frappe_field": "source"},
-            {"sf_field": "Status", "frappe_field": "status"},
+            {
+                "sf_field": "Status",
+                "frappe_field": "status",
+                "transform": "lead_status",
+            },
             {
                 "sf_field": "OwnerId",
                 "frappe_field": "lead_owner",

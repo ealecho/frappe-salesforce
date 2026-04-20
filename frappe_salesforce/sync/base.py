@@ -102,7 +102,7 @@ class BaseSyncer:
         else:
             self._upsert_doc(link, values, sf_id)
 
-        link.sf_system_modstamp = rec["SystemModstamp"]
+        link.sf_system_modstamp = get_datetime(rec["SystemModstamp"])
         link.last_synced_at = now_datetime()
         link.sync_status = "Synced"
         link.error_message = None

@@ -10,7 +10,7 @@ def trigger_manual_sync():
     """Enqueue an immediate incremental sync run."""
     frappe.only_for("System Manager")
     frappe.enqueue(
-        "frappe_salesforce.tasks.scheduled.run_incremental_sync",
+        "frappe_salesforce.tasks.scheduled.run_manual_sync",
         queue="long",
         timeout=3600,
         job_name="salesforce_manual_sync",

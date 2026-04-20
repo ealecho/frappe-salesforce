@@ -101,6 +101,20 @@ def map_user_by_email(salesforce_user_id: str | None) -> str | None:
 # ----------------------------------------------------------------------
 # Picklist mapping
 # ----------------------------------------------------------------------
+LEAD_STATUS_MAP = {
+    "Open - Not Contacted": "New",
+    "Working - Contacted": "Working",
+    "Closed - Converted": "Qualified",
+    "Closed - Not Converted": "Unqualified",
+}
+
+
+def map_lead_status(sf_status: str | None) -> str | None:
+    if not sf_status:
+        return None
+    return LEAD_STATUS_MAP.get(sf_status, sf_status)
+
+
 DEAL_STAGE_MAP = {
     "Prospecting": "Qualification",
     "Qualification": "Qualification",
@@ -133,6 +147,7 @@ TRANSFORMS = {
     "user_lookup": map_user_by_email,
     "account_lookup": map_account,
     "deal_stage": map_deal_stage,
+    "lead_status": map_lead_status,
 }
 
 

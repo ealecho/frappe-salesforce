@@ -59,9 +59,29 @@ def _ensure_custom_fields() -> None:
         "no_copy": 1,
     }
 
+    event_start_field = {
+        "fieldname": "custom_sf_start_datetime",
+        "label": "SF Event Start",
+        "fieldtype": "Datetime",
+        "read_only": 1,
+        "no_copy": 1,
+    }
+    event_end_field = {
+        "fieldname": "custom_sf_end_datetime",
+        "label": "SF Event End",
+        "fieldtype": "Datetime",
+        "read_only": 1,
+        "no_copy": 1,
+    }
+
     fields: dict[str, list[dict]] = {dt: [sf_id_field] for dt in SF_ID_DOCTYPES}
-    # CRM Task gets the extra activity type discriminator.
-    fields["CRM Task"] = [sf_id_field, activity_type_field]
+    # CRM Task gets the activity type discriminator + Event datetime fields.
+    fields["CRM Task"] = [
+        sf_id_field,
+        activity_type_field,
+        event_start_field,
+        event_end_field,
+    ]
 
     create_custom_fields(fields, ignore_validate=True)
 

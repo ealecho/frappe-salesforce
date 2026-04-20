@@ -14,6 +14,17 @@ def run_incremental_sync() -> None:
     IncrementalSyncRunner().run()
 
 
+def run_manual_sync() -> None:
+    """Entrypoint for the manual 'Sync Now' button.
+
+    Bypasses the ``enabled`` gate so admins can trigger a sync even when
+    the scheduler is paused.
+    """
+    from .incremental import IncrementalSyncRunner
+
+    IncrementalSyncRunner().run()
+
+
 def run_deletion_sync() -> None:
     """Entrypoint for the nightly deletion sweep."""
     if not frappe.db.get_single_value("Salesforce Settings", "enabled"):
