@@ -51,6 +51,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Donation, Payment, Relationship, Affiliation, EventRelation).
 
 ### Fixed
+- `LeadSyncer.enrich_values` now fills `first_name='-'` when the SF Lead
+  has no `FirstName`. Frappe CRM marks `first_name` as mandatory but
+  Salesforce only requires `LastName`; imported / form-captured leads
+  (e.g. Mailchimp batches) regularly lack a FirstName and were failing
+  with `MandatoryError`.
 - `salesforce/soql.py::format_soql_datetime` now converts space-separated
   datetime strings (as returned by `frappe.utils.now_datetime()`) to ISO-8601
   with a literal `T` separator, fixing `MALFORMED_QUERY` SOQL 400s on

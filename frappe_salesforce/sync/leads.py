@@ -30,6 +30,12 @@ class LeadSyncer(BaseSyncer):
     def enrich_values(
         self, rec: dict[str, Any], values: dict[str, Any]
     ) -> dict[str, Any]:
+        # Frappe CRM marks first_name as mandatory, but Salesforce only
+        # requires LastName. Imported / form-captured leads frequently have
+        # no FirstName at all; fill in a placeholder so the doc passes
+        # validation without polluting display with junk text.
+        if not (values.get("first_name") or "").strip():
+            values["first_name"] = "-"
         if rec.get("IsConverted"):
             values["status"] = _CONVERTED_FRAPPE_STATUS
             values["custom_sf_converted_account"] = rec.get("ConvertedAccountId")
