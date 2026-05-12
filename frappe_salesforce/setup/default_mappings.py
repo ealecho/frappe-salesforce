@@ -172,11 +172,6 @@ DEFAULT_MAPPINGS: list[dict] = [
                 "frappe_field": "status",
                 "transform": "deal_stage",
             },
-            {
-                "sf_field": "StageName",
-                "frappe_field": "lost_reason",
-                "transform": "deal_lost_reason",
-            },
             {"sf_field": "Probability", "frappe_field": "probability"},
             {
                 "sf_field": "OwnerId",
@@ -580,11 +575,6 @@ DEFAULT_MAPPINGS: list[dict] = [
                 "sf_field": "RelationId",
                 "frappe_field": "invitee",
                 "transform": "polymorphic_lookup",
-            },
-            {
-                "sf_field": "RelationId",
-                "frappe_field": "invitee_doctype",
-                "transform": "polymorphic_doctype",
             },
             {"sf_field": "Status", "frappe_field": "status"},
             {"sf_field": "Response", "frappe_field": "response"},

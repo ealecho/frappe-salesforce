@@ -66,31 +66,12 @@ def execute() -> None:
                 {"doctype": "CRM Lost Reason", "reason": reason}
             ).insert(ignore_permissions=True)
 
-    # 4. Add StageName → lost_reason mapping row to Opportunity if missing.
-    opp_mapping = frappe.db.get_value(
-        "Salesforce Field Mapping",
-        {"salesforce_object": "Opportunity"},
-        "name",
-    )
-    if opp_mapping:
-        already_has = frappe.db.exists(
-            "Salesforce Field Mapping Row",
-            {
-                "parent": opp_mapping,
-                "sf_field": "StageName",
-                "frappe_field": "lost_reason",
-            },
-        )
-        if not already_has:
-            doc = frappe.get_doc("Salesforce Field Mapping", opp_mapping)
-            doc.append(
-                "field_mappings",
-                {
-                    "sf_field": "StageName",
-                    "frappe_field": "lost_reason",
-                    "transform": "deal_lost_reason",
-                },
-            )
-            doc.save(ignore_permissions=True)
+    # 4. (Removed in v0.0.2) Previously appended a second StageName row
+    #    (StageName → lost_reason) here. That row violates the Salesforce
+    #    Field Mapping validator (duplicate sf_field per mapping) and broke
+    #    subsequent doc.save() calls. Deriving lost_reason from StageName
+    #    is now handled in OpportunitySyncer.enrich_values, and the
+    #    v0_0_2.extend_default_mappings patch cleans up any duplicate rows
+    #    inserted by older versions of this patch.
 
     frappe.db.commit()
