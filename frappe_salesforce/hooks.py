@@ -30,6 +30,23 @@ fixtures = [
     {
         "dt": "Custom Field",
         "filters": [
+            ["fieldname", "like", "custom_sf%"],
+            [
+                "dt",
+                "in",
+                [
+                    "CRM Organization",
+                    "Contact",
+                    "CRM Lead",
+                    "CRM Deal",
+                    "CRM Task",
+                ],
+            ],
+        ],
+    },
+    {
+        "dt": "Custom Field",
+        "filters": [
             ["fieldname", "=", "custom_salesforce_id"],
             [
                 "dt",

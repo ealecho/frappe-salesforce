@@ -32,6 +32,9 @@ class BaseSyncer:
     extra_where: ClassVar[str | None] = None
     #: If True, syncer does not create Frappe docs (e.g. UserSyncer).
     link_only: ClassVar[bool] = False
+    #: Extra SOQL fields the syncer needs (for ``enrich_values`` /
+    #: ``after_upsert``) but that aren't represented as mapping rows.
+    extra_soql_fields: ClassVar[tuple[str, ...]] = ()
 
     def __init__(self, client: SalesforceClient, log_item: Any):
         self.client = client
@@ -100,7 +103,17 @@ class BaseSyncer:
             else:
                 self.log.skipped = (self.log.skipped or 0) + 1
         else:
-            self._upsert_doc(link, values, sf_id)
+            doc = self._upsert_doc(link, values, sf_id)
+            if doc is not None:
+                try:
+                    self.after_upsert(rec, doc)
+                except Exception as e:
+                    # after_upsert side-effects (e.g. address upsert) must
+                    # not fail the whole record sync.
+                    frappe.log_error(
+                        title=f"SF after_upsert {self.salesforce_object} {sf_id}",
+                        message=frappe.get_traceback() or str(e),
+                    )
 
         link.sf_system_modstamp = get_datetime(rec["SystemModstamp"]).replace(tzinfo=None)
         link.last_synced_at = now_datetime()
@@ -108,38 +121,103 @@ class BaseSyncer:
         link.error_message = None
         link.save(ignore_permissions=True)
 
-    def _upsert_doc(self, link, values: dict, sf_id: str) -> None:
-        values = {k: v for k, v in values.items() if v is not None}
+    def _upsert_doc(self, link, values: dict, sf_id: str):
+        """Insert or update the target Frappe doc.
+
+        Returns the resulting ``Document`` so subclasses (via ``after_upsert``)
+        can run linked-record side effects.
+        """
+        # Strip ``None`` so we never blank out a field with an empty SF value.
+        # Multi-input transforms (``email_table``, ``phone_table``) return
+        # ``list[dict]`` — those target a child-table fieldname and are routed
+        # to ``_merge_table_payloads`` instead of ``doc.update``.
+        # ``address`` returns a ``dict`` for the side-effect placeholder
+        # (``custom_sf_address_block``); the real upsert happens in
+        # ``after_upsert``, so dicts are dropped here.
+        table_payloads: dict[str, list[dict]] = {}
+        clean_values: dict[str, Any] = {}
+        for k, v in values.items():
+            if v is None:
+                continue
+            if isinstance(v, list) and v and isinstance(v[0], dict):
+                table_payloads[k] = v
+                continue
+            if isinstance(v, dict):
+                continue
+            clean_values[k] = v
+        values = clean_values
+
         if link.frappe_name and frappe.db.exists(self.frappe_doctype, link.frappe_name):
             doc = frappe.get_doc(self.frappe_doctype, link.frappe_name)
             doc.update(values)
             doc.custom_salesforce_id = sf_id
+            self._merge_table_payloads(doc, table_payloads)
             doc.save(ignore_permissions=True)
             self.log.updated = (self.log.updated or 0) + 1
-        else:
-            # Try to match an existing doc by SF ID custom field first.
-            existing = frappe.db.get_value(
-                self.frappe_doctype, {"custom_salesforce_id": sf_id}, "name"
+            return doc
+
+        # Try to match an existing doc by SF ID custom field first.
+        existing = frappe.db.get_value(
+            self.frappe_doctype, {"custom_salesforce_id": sf_id}, "name"
+        )
+        if existing:
+            doc = frappe.get_doc(self.frappe_doctype, existing)
+            doc.update(values)
+            self._merge_table_payloads(doc, table_payloads)
+            doc.save(ignore_permissions=True)
+            link.frappe_name = existing
+            link.frappe_doctype = self.frappe_doctype
+            self.log.updated = (self.log.updated or 0) + 1
+            return doc
+
+        doc = frappe.get_doc(
+            {
+                "doctype": self.frappe_doctype,
+                "custom_salesforce_id": sf_id,
+                **values,
+            }
+        )
+        self._merge_table_payloads(doc, table_payloads)
+        doc.insert(ignore_permissions=True)
+        link.frappe_name = doc.name
+        link.frappe_doctype = self.frappe_doctype
+        self.log.created = (self.log.created or 0) + 1
+        return doc
+
+    def _merge_table_payloads(self, doc, payloads: dict[str, list[dict]]) -> None:
+        """Merge multi-input child-table payloads into ``doc``.
+
+        ``payloads`` maps a child-table fieldname (e.g. ``"email_ids"``) to
+        a list of row dicts. Each row dict must include the row's natural
+        key (``"email_id"`` for emails, ``"phone"`` for phones); existing
+        rows matching a key are updated in place, new rows appended,
+        non-SF rows preserved untouched.
+        """
+        for fieldname, rows in payloads.items():
+            if not rows:
+                continue
+            # Use the first non-Salesforce-Id key as the natural key.
+            sample_keys = set(rows[0].keys())
+            key = next(
+                (k for k in ("email_id", "phone") if k in sample_keys),
+                None,
             )
-            if existing:
-                doc = frappe.get_doc(self.frappe_doctype, existing)
-                doc.update(values)
-                doc.save(ignore_permissions=True)
-                link.frappe_name = existing
-                link.frappe_doctype = self.frappe_doctype
-                self.log.updated = (self.log.updated or 0) + 1
-            else:
-                doc = frappe.get_doc(
-                    {
-                        "doctype": self.frappe_doctype,
-                        "custom_salesforce_id": sf_id,
-                        **values,
-                    }
-                )
-                doc.insert(ignore_permissions=True)
-                link.frappe_name = doc.name
-                link.frappe_doctype = self.frappe_doctype
-                self.log.created = (self.log.created or 0) + 1
+            if key is None:
+                continue
+            existing = doc.get(fieldname) or []
+            existing_by_key = {
+                (row.get(key) or "").lower(): row
+                for row in existing
+                if row.get(key)
+            }
+            for new_row in rows:
+                k = (new_row.get(key) or "").lower()
+                if not k:
+                    continue
+                if k in existing_by_key:
+                    existing_by_key[k].update(new_row)
+                else:
+                    doc.append(fieldname, new_row)
 
     # ------------------------------------------------------------------
     # Extension points
@@ -149,6 +227,15 @@ class BaseSyncer:
     ) -> dict[str, Any]:
         """Hook for subclasses to add computed / derived fields."""
         return values
+
+    def after_upsert(self, rec: dict[str, Any], doc) -> None:
+        """Hook called after the Frappe doc is saved.
+
+        Used for linked-record side effects that can't be expressed as a
+        single mapping (e.g. upserting an ``Address`` doc and linking it
+        back via ``Dynamic Link``). Default is a no-op.
+        """
+        return
 
     def _resolve_link_only(self, rec: dict, values: dict) -> str | None:
         """For link-only syncers, return the existing Frappe docname to link."""
@@ -168,19 +255,37 @@ class BaseSyncer:
         return frappe.get_doc("Salesforce Field Mapping", name)
 
     def _soql_fields(self) -> list[str]:
-        if not self.mapping:
-            return []
-        return [row.sf_field for row in self.mapping.field_mappings if row.sf_field]
+        fields: list[str] = []
+        if self.mapping:
+            for row in self.mapping.field_mappings:
+                if row.sf_field:
+                    fields.append(row.sf_field)
+                if getattr(row, "sf_fields", None):
+                    fields.extend(_split_sf_fields(row.sf_fields))
+        fields.extend(self.extra_soql_fields)
+        return fields
 
     def _apply_mapping(self, rec: dict[str, Any]) -> dict[str, Any]:
         values: dict[str, Any] = {}
         if not self.mapping:
             return values
         for row in self.mapping.field_mappings:
-            raw = rec.get(row.sf_field) if row.sf_field else None
-            if raw is None and row.default_value:
-                raw = row.default_value
-            values[row.frappe_field] = apply_transform(row.transform, raw)
+            multi = _split_sf_fields(getattr(row, "sf_fields", None))
+            if multi:
+                # Multi-input transform: feed dict of {sf_field: value}.
+                payload = {f: rec.get(f) for f in multi}
+                if all(v is None for v in payload.values()) and not row.default_value:
+                    raw: Any = None
+                else:
+                    raw = payload
+            else:
+                raw = rec.get(row.sf_field) if row.sf_field else None
+                if raw is None and row.default_value:
+                    raw = row.default_value
+            transformed = apply_transform(row.transform, raw)
+            # Multi-input transforms targeting child tables encode the target
+            # via ``frappe_field`` prefix ``__table:<fieldname>``.
+            values[row.frappe_field] = transformed
         return values
 
     # ------------------------------------------------------------------
@@ -225,3 +330,10 @@ class BaseSyncer:
         )
         doc.insert(ignore_permissions=True)
         return doc
+
+
+def _split_sf_fields(value: str | None) -> list[str]:
+    """Split a Long Text ``sf_fields`` value into individual SF field names."""
+    if not value:
+        return []
+    return [line.strip() for line in str(value).splitlines() if line.strip()]

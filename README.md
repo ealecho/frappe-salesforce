@@ -6,11 +6,36 @@ One-way Salesforce → Frappe CRM integration using SOQL over the Salesforce RES
 
 - OAuth 2.0 JWT Bearer authentication (server-to-server)
 - Incremental sync every 15 minutes via `SystemModstamp`
-- Configurable field mappings per Salesforce object
+- Configurable field mappings per Salesforce object (data, not code)
+- Multi-input mappings for compound fields: addresses, multi-channel emails / phones
 - Syncs Users (for owner mapping), Accounts, Contacts, Leads, Opportunities, Tasks, Events
 - Deletion sync (daily) via Salesforce `getDeleted` endpoint
 - Sync Log with per-object stats and SOQL audit
 - Workspace with dashboard charts and KPI number cards
+- Full-backfill ("Reset HWMs to Epoch") and date-windowed backfill from the Salesforce Settings UI
+
+## Post-deploy data refresh
+
+After installing or upgrading this app you should refresh existing data from
+Salesforce so prior records pick up new mappings and bug fixes.
+
+1. `bench --site <site> migrate` — runs the v0.1.0 patches: creates the
+   `custom_sf_*` fields on existing sites, extends default mappings (additively,
+   never clobbering user customisations), and rewrites known-buggy rows from
+   v0.0.x (e.g. `Opportunity.Amount → annual_revenue` becomes
+   `Amount → deal_value`).
+2. Open **Salesforce Settings** → **Danger Zone** → **Reset HWMs to Epoch
+   (Full Backfill)** → confirm.
+3. Wait for the next 15-minute scheduler tick or click **Sync Now**. Records
+   are upserted by `custom_salesforce_id`; existing Frappe rows are updated
+   in place (no duplicates).
+4. Monitor progress via **Salesforce Sync Log**. The per-day API budget
+   (default 50,000) caps daily burn; large orgs may take several days to
+   fully replay.
+
+The reset is non-destructive in Frappe terms but is one-way — any locally
+edited fields that also exist in a SF mapping will be overwritten by the
+SF value. Fields not covered by mappings are untouched.
 
 ## Scope (v1)
 

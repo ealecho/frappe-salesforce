@@ -96,6 +96,43 @@ frappe.ui.form.on("Salesforce Settings", {
             });
         }, __("Diagnostics"));
 
+        frm.add_custom_button(__("Reset HWMs to Epoch (Full Backfill)"), () => {
+            const warning = __(
+                "This will reset every Salesforce high-water mark to " +
+                "1970-01-01. The next scheduler tick (or 'Sync Now') will " +
+                "begin re-fetching every record from the beginning of " +
+                "time. This is the recommended action after deploying " +
+                "mapping fixes — but it WILL consume significant API " +
+                "quota. Per-day budgets still apply.\n\n" +
+                "Are you absolutely sure?"
+            );
+            frappe.confirm(warning, () => {
+                frappe.call({
+                    method: "frappe_salesforce.api.sync.reset_all_high_water_marks",
+                    freeze: true,
+                    freeze_message: __("Resetting high-water marks..."),
+                    callback: (r) => {
+                        if (r.message && r.message.ok) {
+                            frappe.msgprint({
+                                title: __("Backfill Armed"),
+                                message: __(
+                                    "All {0} high-water marks reset to {1}. " +
+                                    "Trigger 'Sync Now' or wait for the next " +
+                                    "scheduler tick. Monitor progress via " +
+                                    "Salesforce Sync Log.",
+                                    [
+                                        r.message.fields.length,
+                                        r.message.reset_to,
+                                    ]
+                                ),
+                                indicator: "orange",
+                            });
+                        }
+                    },
+                });
+            });
+        }, __("Danger Zone"));
+
         frm.add_custom_button(__("Backfill From Date"), () => {
             frappe.prompt(
                 [
