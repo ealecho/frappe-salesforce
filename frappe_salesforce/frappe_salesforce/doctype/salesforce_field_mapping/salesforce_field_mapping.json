@@ -14,7 +14,7 @@
   "picklist_mappings"
  ],
  "fields": [
-  {"fieldname": "salesforce_object", "fieldtype": "Select", "label": "Salesforce Object", "options": "Account\nContact\nLead\nOpportunity\nTask\nEvent\nUser", "reqd": 1, "unique": 1, "in_list_view": 1},
+  {"fieldname": "salesforce_object", "fieldtype": "Select", "label": "Salesforce Object", "options": "Account\nContact\nLead\nOpportunity\nTask\nEvent\nUser\nCampaign\nnpe03__Recurring_Donation__c\nnpe01__OppPayment__c\nnpe4__Relationship__c\nnpe5__Affiliation__c\nEventRelation", "reqd": 1, "unique": 1, "in_list_view": 1},
   {"fieldname": "frappe_doctype", "fieldtype": "Link", "options": "DocType", "label": "Frappe DocType", "reqd": 1, "in_list_view": 1},
   {"fieldname": "enabled", "fieldtype": "Check", "label": "Enabled", "default": "1", "in_list_view": 1},
   {"fieldname": "sb_fields", "fieldtype": "Section Break", "label": "Field Mappings"},
