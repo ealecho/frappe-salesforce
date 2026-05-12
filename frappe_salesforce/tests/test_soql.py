@@ -22,6 +22,16 @@ def test_format_soql_datetime_from_string():
     assert format_soql_datetime("2026-04-19T12:30:45.123Z") == "2026-04-19T12:30:45Z"
 
 
+def test_format_soql_datetime_from_space_separated_string():
+    # Regression: frappe.utils.now_datetime() returns a space-separated string
+    # ("YYYY-MM-DD HH:MM:SS"). SOQL requires a literal 'T' between date/time;
+    # without this conversion SF responds with MALFORMED_QUERY.
+    assert format_soql_datetime("2026-05-12 13:03:20") == "2026-05-12T13:03:20Z"
+    assert (
+        format_soql_datetime("2026-05-12 13:03:20.123456") == "2026-05-12T13:03:20Z"
+    )
+
+
 def test_build_incremental_query_includes_modstamp():
     q = build_incremental_query(
         "Account",

@@ -43,11 +43,9 @@ DEFAULT_MAPPINGS: list[dict] = [
             {"sf_field": "TickerSymbol", "frappe_field": "custom_sf_ticker"},
             {"sf_field": "Sic", "frappe_field": "custom_sf_sic"},
             {"sf_field": "RecordTypeId", "frappe_field": "custom_sf_record_type"},
-            {
-                "sf_field": "ParentId",
-                "frappe_field": "custom_sf_parent_account",
-                "transform": "account_lookup",
-            },
+            # NOTE: ParentId omitted by default. Some orgs (incl. NPSP) restrict
+            # this field's FLS for integration users, causing SOQL 400s. Admins
+            # whose org exposes ParentId can re-add the mapping row in the UI.
             {
                 "sf_field": "OwnerId",
                 "frappe_field": "deal_owner",
@@ -103,7 +101,9 @@ DEFAULT_MAPPINGS: list[dict] = [
                 "frappe_field": "custom_sf_do_not_call",
                 "transform": "boolean",
             },
-            {"sf_field": "RecordTypeId", "frappe_field": "custom_sf_record_type"},
+            # NOTE: RecordTypeId omitted by default — many orgs FLS-restrict it
+            # on Contact for integration users (SOQL 400). Re-add in the UI if
+            # your org exposes it.
         ],
     },
     {
@@ -117,7 +117,11 @@ DEFAULT_MAPPINGS: list[dict] = [
             {"sf_field": "Phone", "frappe_field": "phone"},
             {"sf_field": "MobilePhone", "frappe_field": "mobile_no"},
             {"sf_field": "Title", "frappe_field": "job_title"},
-            {"sf_field": "LeadSource", "frappe_field": "source"},
+            {
+                "sf_field": "LeadSource",
+                "frappe_field": "source",
+                "transform": "lead_source",
+            },
             {
                 "sf_field": "Status",
                 "frappe_field": "status",

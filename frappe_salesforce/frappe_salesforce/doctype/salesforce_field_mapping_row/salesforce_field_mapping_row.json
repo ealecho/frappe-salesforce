@@ -14,7 +14,7 @@
  "fields": [
   {"fieldname": "sf_field", "fieldtype": "Data", "label": "Salesforce Field", "in_list_view": 1, "reqd": 1, "columns": 2},
   {"fieldname": "frappe_field", "fieldtype": "Data", "label": "Frappe Field", "in_list_view": 1, "reqd": 1, "columns": 2},
-  {"fieldname": "transform", "fieldtype": "Select", "label": "Transform", "options": "none\nboolean\ndate\ndatetime\nhtml_strip\nuser_lookup\naccount_lookup\ncampaign_lookup\ncontact_lookup\npolymorphic_lookup\npolymorphic_doctype\ndeal_stage\ndeal_lost_reason\nlead_status\ntask_status\ntask_priority", "default": "none", "in_list_view": 1, "columns": 2},
+  {"fieldname": "transform", "fieldtype": "Select", "label": "Transform", "options": "none\nboolean\ndate\ndatetime\nhtml_strip\nuser_lookup\naccount_lookup\ncampaign_lookup\ncontact_lookup\npolymorphic_lookup\npolymorphic_doctype\ndeal_stage\ndeal_lost_reason\nlead_status\ntask_status\ntask_priority\nlead_source", "default": "none", "in_list_view": 1, "columns": 2},
   {"fieldname": "required", "fieldtype": "Check", "label": "Required", "default": "0"},
   {"fieldname": "default_value", "fieldtype": "Data", "label": "Default Value", "in_list_view": 1, "columns": 2}
  ],

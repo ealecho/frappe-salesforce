@@ -243,6 +243,34 @@ def map_task_priority(sf_priority: str | None) -> str | None:
     return TASK_PRIORITY_MAP.get(sf_priority, "Medium")
 
 
+def map_lead_source(sf_source: str | None) -> str | None:
+    """Map SF Lead.LeadSource to CRM Lead Source, auto-creating missing rows.
+
+    SF picklists are an open vocabulary; orgs routinely add values like
+    "MailChimp" without coordinating with downstream systems. Rather than
+    failing the whole lead with a LinkValidationError, we lazily create the
+    CRM Lead Source row on first sight. Returns None for empty input.
+    """
+    if not sf_source:
+        return None
+    value = str(sf_source).strip()
+    if not value:
+        return None
+    if frappe.db.exists("CRM Lead Source", value):
+        return value
+    try:
+        doc = frappe.get_doc({"doctype": "CRM Lead Source", "lead_source": value})
+        doc.insert(ignore_permissions=True)
+        return doc.name
+    except Exception:
+        # If creation fails (permissions, schema drift), don't block the lead.
+        frappe.log_error(
+            title=f"SF lead_source auto-create failed: {value}",
+            message=frappe.get_traceback(),
+        )
+        return None
+
+
 # ----------------------------------------------------------------------
 # Dispatcher
 # ----------------------------------------------------------------------
@@ -263,6 +291,7 @@ TRANSFORMS = {
     "task_status": map_task_status,
     "task_priority": map_task_priority,
     "deal_lost_reason": map_deal_lost_reason,
+    "lead_source": map_lead_source,
 }
 
 

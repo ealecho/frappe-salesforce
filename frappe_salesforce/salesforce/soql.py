@@ -14,9 +14,12 @@ def format_soql_datetime(value: datetime | str) -> str:
     """
     if isinstance(value, str):
         # Normalise: strip trailing Z, fractional seconds, offset, then re-add Z.
+        # Frappe's now_datetime() returns a space-separated string ("YYYY-MM-DD HH:MM:SS")
+        # but SOQL requires ISO-8601 with a literal 'T' between date and time.
         value = value.replace("Z", "").split(".")[0]
         if "+" in value:
             value = value.split("+")[0]
+        value = value.replace(" ", "T")
         return f"{value}Z"
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
