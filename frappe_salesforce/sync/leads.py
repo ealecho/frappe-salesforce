@@ -27,6 +27,8 @@ class LeadSyncer(BaseSyncer):
 
     address_prefixes = ("",)  # Leads use bare Street/City/State/PostalCode/Country
 
+    extra_soql_fields = ("Street", "City", "State", "PostalCode", "Country")
+
     def enrich_values(
         self, rec: dict[str, Any], values: dict[str, Any]
     ) -> dict[str, Any]:

@@ -30,6 +30,11 @@ class BaseSyncer:
     order_in_sync: ClassVar[int] = 100
     #: Extra SOQL WHERE clause to apply to incremental queries.
     extra_where: ClassVar[str | None] = None
+    #: Extra SOQL fields to SELECT that don't appear in the mapping.
+    #: Use for fields needed in ``enrich_values`` / ``after_upsert`` (e.g.
+    #: compound address blocks consumed by ``upsert_addresses``) without
+    #: forcing the admin to add no-op mapping rows.
+    extra_soql_fields: ClassVar[tuple[str, ...]] = ()
     #: If True, syncer does not create Frappe docs (e.g. UserSyncer).
     link_only: ClassVar[bool] = False
 
@@ -185,9 +190,13 @@ class BaseSyncer:
         return frappe.get_doc("Salesforce Field Mapping", name)
 
     def _soql_fields(self) -> list[str]:
-        if not self.mapping:
-            return []
-        return [row.sf_field for row in self.mapping.field_mappings if row.sf_field]
+        fields: list[str] = []
+        if self.mapping:
+            fields.extend(
+                row.sf_field for row in self.mapping.field_mappings if row.sf_field
+            )
+        fields.extend(self.extra_soql_fields)
+        return fields
 
     def _apply_mapping(self, rec: dict[str, Any]) -> dict[str, Any]:
         values: dict[str, Any] = {}

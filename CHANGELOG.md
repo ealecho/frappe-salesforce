@@ -51,6 +51,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Donation, Payment, Relationship, Affiliation, EventRelation).
 
 ### Fixed
+- `BaseSyncer` gains an `extra_soql_fields` class attribute so syncers can
+  pull SF fields needed by `enrich_values` / `after_upsert` (e.g. compound
+  address blocks) without having to declare a no-op mapping row. Address
+  upserts now work end-to-end for Account (`Billing*`/`Shipping*`),
+  Contact (`Mailing*`/`Other*`), and Lead (bare `Street`/`City`/...);
+  previously SOQL never selected those fields so `extract_block` saw
+  nothing and zero Address rows were created.
 - `LeadSyncer.enrich_values` now fills `first_name='-'` when the SF Lead
   has no `FirstName`. Frappe CRM marks `first_name` as mandatory but
   Salesforce only requires `LastName`; imported / form-captured leads

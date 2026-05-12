@@ -16,6 +16,13 @@ class ContactSyncer(BaseSyncer):
 
     address_prefixes = ("Mailing", "Other")
 
+    extra_soql_fields = (
+        "MailingStreet", "MailingCity", "MailingState",
+        "MailingPostalCode", "MailingCountry",
+        "OtherStreet", "OtherCity", "OtherState",
+        "OtherPostalCode", "OtherCountry",
+    )
+
     def after_upsert(self, rec: dict[str, Any], frappe_name: str) -> None:
         upsert_addresses(
             self.frappe_doctype,
