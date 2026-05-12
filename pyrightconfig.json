@@ -1,0 +1,13 @@
+{
+  "include": ["frappe_salesforce"],
+  "exclude": [
+    "**/__pycache__",
+    "**/node_modules",
+    ".ruff_cache"
+  ],
+  "pythonVersion": "3.10",
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
+  "reportAttributeAccessIssue": "warning",
+  "typeCheckingMode": "basic"
+}
