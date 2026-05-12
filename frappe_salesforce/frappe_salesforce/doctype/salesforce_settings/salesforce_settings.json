@@ -38,7 +38,13 @@
   "last_sync_lead",
   "last_sync_opportunity",
   "last_sync_task",
-  "last_sync_event"
+  "last_sync_event",
+  "last_sync_campaign",
+  "last_sync_recurring_donation",
+  "last_sync_payment",
+  "last_sync_relationship",
+  "last_sync_affiliation",
+  "last_sync_event_relation"
  ],
  "fields": [
   {"fieldname": "enabled", "fieldtype": "Check", "label": "Enabled", "default": "0"},
@@ -75,7 +81,13 @@
   {"fieldname": "last_sync_lead", "fieldtype": "Datetime", "label": "Last Sync: Lead"},
   {"fieldname": "last_sync_opportunity", "fieldtype": "Datetime", "label": "Last Sync: Opportunity"},
   {"fieldname": "last_sync_task", "fieldtype": "Datetime", "label": "Last Sync: Task"},
-  {"fieldname": "last_sync_event", "fieldtype": "Datetime", "label": "Last Sync: Event"}
+  {"fieldname": "last_sync_event", "fieldtype": "Datetime", "label": "Last Sync: Event"},
+  {"fieldname": "last_sync_campaign", "fieldtype": "Datetime", "label": "Last Sync: Campaign"},
+  {"fieldname": "last_sync_recurring_donation", "fieldtype": "Datetime", "label": "Last Sync: Recurring Donation"},
+  {"fieldname": "last_sync_payment", "fieldtype": "Datetime", "label": "Last Sync: Payment"},
+  {"fieldname": "last_sync_relationship", "fieldtype": "Datetime", "label": "Last Sync: Relationship"},
+  {"fieldname": "last_sync_affiliation", "fieldtype": "Datetime", "label": "Last Sync: Affiliation"},
+  {"fieldname": "last_sync_event_relation", "fieldtype": "Datetime", "label": "Last Sync: Event Relation"}
  ],
  "issingle": 1,
  "links": [],

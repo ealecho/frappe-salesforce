@@ -97,7 +97,7 @@ class SalesforceClient:
     def calls_this_tick(self) -> int:
         return self._calls_this_tick
 
-    def _settings(self):
+    def _settings(self) -> Any:
         if self._settings_cache is None:
             self._settings_cache = frappe.get_cached_doc("Salesforce Settings")
         return self._settings_cache

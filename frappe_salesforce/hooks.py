@@ -26,22 +26,22 @@ scheduler_events = {
 }
 
 # Fixtures
+#
+# Export every SF mirror custom field — they all share the ``custom_sf_*``
+# prefix (plus the legacy ``custom_salesforce_id``). Install/patch creates
+# the fields programmatically; this fixture ensures they're tracked in
+# version control as well.
 fixtures = [
     {
         "dt": "Custom Field",
         "filters": [
+            ["fieldname", "like", "custom_sf%"],
+        ],
+    },
+    {
+        "dt": "Custom Field",
+        "filters": [
             ["fieldname", "=", "custom_salesforce_id"],
-            [
-                "dt",
-                "in",
-                [
-                    "CRM Organization",
-                    "Contact",
-                    "CRM Lead",
-                    "CRM Deal",
-                    "CRM Task",
-                ],
-            ],
         ],
     },
 ]

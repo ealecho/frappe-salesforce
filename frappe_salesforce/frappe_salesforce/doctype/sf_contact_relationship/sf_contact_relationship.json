@@ -1,0 +1,39 @@
+{
+ "actions": [],
+ "autoname": "field:custom_salesforce_id",
+ "creation": "2026-01-01 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "custom_salesforce_id",
+  "contact",
+  "related_contact",
+  "relationship_type",
+  "status",
+  "system_created",
+  "sb_description",
+  "description"
+ ],
+ "fields": [
+  {"fieldname": "custom_salesforce_id", "fieldtype": "Data", "label": "Salesforce ID", "unique": 1, "reqd": 1, "read_only": 1, "in_standard_filter": 1, "search_index": 1},
+  {"fieldname": "contact", "fieldtype": "Link", "options": "Contact", "label": "Contact", "in_list_view": 1, "in_standard_filter": 1},
+  {"fieldname": "related_contact", "fieldtype": "Link", "options": "Contact", "label": "Related Contact", "in_list_view": 1, "in_standard_filter": 1},
+  {"fieldname": "relationship_type", "fieldtype": "Data", "label": "Type", "in_list_view": 1},
+  {"fieldname": "status", "fieldtype": "Data", "label": "Status"},
+  {"fieldname": "system_created", "fieldtype": "Check", "label": "System Created"},
+  {"fieldname": "sb_description", "fieldtype": "Section Break", "label": "Description", "collapsible": 1},
+  {"fieldname": "description", "fieldtype": "Small Text", "label": "Description"}
+ ],
+ "links": [],
+ "modified": "2026-01-01 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Frappe Salesforce",
+ "name": "SF Contact Relationship",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "delete": 1, "email": 1, "export": 1, "print": 1, "read": 1, "role": "System Manager", "share": 1, "write": 1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 1
+}

@@ -101,8 +101,16 @@ class BaseSyncer:
                 self.log.skipped = (self.log.skipped or 0) + 1
         else:
             self._upsert_doc(link, values, sf_id)
+            if link.frappe_name:
+                try:
+                    self.after_upsert(rec, link.frappe_name)
+                except Exception as e:
+                    frappe.log_error(
+                        title=f"SF after_upsert {self.salesforce_object} {sf_id}",
+                        message=frappe.get_traceback() or str(e),
+                    )
 
-        link.sf_system_modstamp = get_datetime(rec["SystemModstamp"]).replace(tzinfo=None)
+        link.sf_system_modstamp = rec["SystemModstamp"]
         link.last_synced_at = now_datetime()
         link.sync_status = "Synced"
         link.error_message = None
@@ -149,6 +157,15 @@ class BaseSyncer:
     ) -> dict[str, Any]:
         """Hook for subclasses to add computed / derived fields."""
         return values
+
+    def after_upsert(self, rec: dict[str, Any], frappe_name: str) -> None:
+        """Hook called after the parent doc has been inserted/updated.
+
+        Use this for side effects that need the parent docname (creating
+        linked Address rows, child-table population, etc.). Exceptions are
+        logged but do not fail the record.
+        """
+        return None
 
     def _resolve_link_only(self, rec: dict, values: dict) -> str | None:
         """For link-only syncers, return the existing Frappe docname to link."""

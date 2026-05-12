@@ -49,6 +49,7 @@ def backfill_from_date(since: str):
         dt = get_datetime(since)
     except Exception as e:
         frappe.throw(f"Invalid datetime: {e}")
+        raise  # unreachable; frappe.throw raises, but satisfies type checker
 
     settings = frappe.get_single("Salesforce Settings")
     for field in HWM_FIELDS:

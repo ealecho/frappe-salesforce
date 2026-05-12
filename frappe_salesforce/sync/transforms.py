@@ -72,6 +72,49 @@ def map_account(salesforce_account_id: str | None) -> str | None:
     )
 
 
+def map_polymorphic(salesforce_id: str | None) -> str | None:
+    """Resolve any SF Id (Contact/Account/Opportunity/Campaign/...) → Frappe docname.
+
+    Returns ``None`` if no Salesforce Record Link exists yet (e.g. when the
+    referenced record hasn't been synced yet). Callers that need the doctype as
+    well should call ``lookup_record_link`` directly.
+    """
+    link = lookup_record_link(salesforce_id)
+    if not link:
+        return None
+    return link.get("frappe_name")
+
+
+def map_polymorphic_doctype(salesforce_id: str | None) -> str | None:
+    """Companion to ``map_polymorphic`` — return the linked Frappe DocType."""
+    link = lookup_record_link(salesforce_id)
+    if not link:
+        return None
+    return link.get("frappe_doctype")
+
+
+def map_campaign(salesforce_campaign_id: str | None) -> str | None:
+    """Resolve a Salesforce CampaignId → SF Campaign docname."""
+    if not salesforce_campaign_id:
+        return None
+    return frappe.db.get_value(
+        "SF Campaign",
+        {"custom_salesforce_id": salesforce_campaign_id},
+        "name",
+    )
+
+
+def map_contact(salesforce_contact_id: str | None) -> str | None:
+    """Resolve a Salesforce ContactId → Frappe Contact name."""
+    if not salesforce_contact_id:
+        return None
+    return frappe.db.get_value(
+        "Contact",
+        {"custom_salesforce_id": salesforce_contact_id},
+        "name",
+    )
+
+
 def map_user_by_email(salesforce_user_id: str | None) -> str | None:
     """Resolve a Salesforce OwnerId to a Frappe User email.
 
@@ -211,6 +254,10 @@ TRANSFORMS = {
     "html_strip": html_strip,
     "user_lookup": map_user_by_email,
     "account_lookup": map_account,
+    "campaign_lookup": map_campaign,
+    "contact_lookup": map_contact,
+    "polymorphic_lookup": map_polymorphic,
+    "polymorphic_doctype": map_polymorphic_doctype,
     "deal_stage": map_deal_stage,
     "lead_status": map_lead_status,
     "task_status": map_task_status,

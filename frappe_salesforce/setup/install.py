@@ -5,15 +5,12 @@ from __future__ import annotations
 import frappe
 from frappe.utils import now_datetime
 
+from .custom_fields import SF_ID_DOCTYPES, ensure_all_custom_fields
 from .default_mappings import seed_default_field_mappings
 
-SF_ID_DOCTYPES = [
-    "CRM Organization",
-    "Contact",
-    "CRM Lead",
-    "CRM Deal",
-    "CRM Task",
-]
+# Re-exported for backwards compatibility with anything importing
+# ``SF_ID_DOCTYPES`` from this module.
+__all__ = ["after_install", "SF_ID_DOCTYPES", "HWM_FIELDS"]
 
 # Fields on Salesforce Settings that hold per-syncer high-water marks.
 # Default to install-time ``now()`` so the first tick does NOT backfill
@@ -27,63 +24,20 @@ HWM_FIELDS = [
     "last_sync_opportunity",
     "last_sync_task",
     "last_sync_event",
+    "last_sync_campaign",
+    "last_sync_recurring_donation",
+    "last_sync_payment",
+    "last_sync_relationship",
+    "last_sync_affiliation",
+    "last_sync_event_relation",
 ]
 
 
 def after_install() -> None:
-    _ensure_custom_fields()
+    ensure_all_custom_fields()
     _ensure_default_settings()
     seed_default_field_mappings()
     frappe.db.commit()
-
-
-def _ensure_custom_fields() -> None:
-    from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
-
-    sf_id_field = {
-        "fieldname": "custom_salesforce_id",
-        "label": "Salesforce ID",
-        "fieldtype": "Data",
-        "unique": 1,
-        "read_only": 1,
-        "no_copy": 1,
-        "in_standard_filter": 1,
-        "search_index": 1,
-    }
-    activity_type_field = {
-        "fieldname": "custom_sf_activity_type",
-        "label": "Salesforce Activity Type",
-        "fieldtype": "Select",
-        "options": "\nTask\nEvent",
-        "read_only": 1,
-        "no_copy": 1,
-    }
-
-    event_start_field = {
-        "fieldname": "custom_sf_start_datetime",
-        "label": "SF Event Start",
-        "fieldtype": "Datetime",
-        "read_only": 1,
-        "no_copy": 1,
-    }
-    event_end_field = {
-        "fieldname": "custom_sf_end_datetime",
-        "label": "SF Event End",
-        "fieldtype": "Datetime",
-        "read_only": 1,
-        "no_copy": 1,
-    }
-
-    fields: dict[str, list[dict]] = {dt: [sf_id_field] for dt in SF_ID_DOCTYPES}
-    # CRM Task gets the activity type discriminator + Event datetime fields.
-    fields["CRM Task"] = [
-        sf_id_field,
-        activity_type_field,
-        event_start_field,
-        event_end_field,
-    ]
-
-    create_custom_fields(fields, ignore_validate=True)
 
 
 def _ensure_default_settings() -> None:
