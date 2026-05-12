@@ -51,6 +51,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Donation, Payment, Relationship, Affiliation, EventRelation).
 
 ### Fixed
+- `salesforce/soql.py::format_soql_datetime` now converts space-separated
+  datetime strings (as returned by `frappe.utils.now_datetime()`) to ISO-8601
+  with a literal `T` separator, fixing `MALFORMED_QUERY` SOQL 400s on
+  newly-installed syncers whose HWM was seeded from `now()`.
+- Removed `Account.ParentId` and `Contact.RecordTypeId` mapping rows from
+  defaults; both are FLS-restricted for the integration user on common
+  NPSP orgs and were causing `INVALID_FIELD` 400s aborting the syncer.
+  Existing installs are cleaned up by
+  `patches/v0_0_2/prune_problematic_mapping_rows`.
+- New `lead_source` transform auto-creates missing `CRM Lead Source`
+  records instead of failing the lead with `LinkValidationError`. The
+  Lead.LeadSource → source mapping row is upgraded in place by the same
+  patch.
 - `patches/v0_0_1/add_custom_salesforce_id_fields.py` previously imported a
   deleted helper. It now calls `ensure_all_custom_fields()` from
   `setup.custom_fields`.
