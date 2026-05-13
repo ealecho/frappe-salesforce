@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.1.2]
+
+### Changed
+- `hooks.fixtures` filter narrowed: only `custom_salesforce_id` is
+  exported as a fixture. The previous `custom_sf%` glob would re-export
+  ~290 `custom_sf_*` Custom Field records, each of which would trigger
+  a per-field `ALTER TABLE` during `bench migrate`'s `sync_fixtures()`
+  pass — easily exceeding MariaDB's `max_statement_time` on tables with
+  thousands of rows. The `custom_sf_*` fields are managed code-side via
+  `setup/custom_fields.py:ensure_all_custom_fields()` (called from
+  `after_install` and `patches/v0_1_0/add_custom_fields`), which uses
+  `create_custom_fields()` — that path emits a single per-doctype
+  `ALTER` after all fields are created, not 290 separate ones.
+
+### Documentation
+- README adds a "Migration timeout on large Contact tables" section
+  explaining how to diagnose and recover from a `max_statement_time`
+  abort during `sync_fixtures()`.
+
 ## [0.1.1]
 
 ### Fixed

@@ -37,6 +37,39 @@ The reset is non-destructive in Frappe terms but is one-way — any locally
 edited fields that also exist in a SF mapping will be overwritten by the
 SF value. Fields not covered by mappings are untouched.
 
+### Migration timeout on large Contact tables
+
+If `bench migrate` aborts during `sync_fixtures()` with:
+
+```
+pymysql.err.OperationalError: (1969, 'Query execution was interrupted (max_statement_time exceeded)')
+ALTER TABLE `tabContact` MODIFY `custom_sf_*` ...
+```
+
+…another query was holding a metadata lock on `tabContact` long enough
+that MariaDB's `max_statement_time` (default 3600s) expired before the
+ALTER could acquire the lock. The migration partially succeeded — patches
+ran, but fixture import was interrupted.
+
+To recover:
+
+1. Find and kill the blocking query:
+   ```sql
+   SHOW FULL PROCESSLIST;
+   -- look for the query holding tabContact and `KILL <id>;` it
+   ```
+2. Re-run `bench --site <site> migrate`. Patches that already completed
+   are recorded in `tabPatch Log` and skipped; only the remaining work
+   (fixture import) reruns.
+3. If the ALTER itself is genuinely slow on a large table, run it
+   manually during a maintenance window (`pt-online-schema-change` or
+   raise `max_statement_time` for that session).
+
+This app does **not** ship `custom_sf_*` fields as fixtures — they're
+created code-side via `setup/custom_fields.py:ensure_all_custom_fields()`.
+The fixture filter in `hooks.py` is intentionally narrow
+(`custom_salesforce_id` only) so the fixture-import schema-sync is fast.
+
 ## Scope (v1)
 
 | Salesforce Object | Frappe CRM DocType |
