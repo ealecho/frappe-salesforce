@@ -8,3 +8,4 @@ frappe_salesforce.patches.v0_0_1.fix_picklist_transforms
 frappe_salesforce.patches.v0_1_0.add_custom_fields
 frappe_salesforce.patches.v0_1_0.fix_buggy_mappings
 frappe_salesforce.patches.v0_1_0.extend_default_mappings
+frappe_salesforce.patches.v0_1_0.prune_problematic_mapping_rows

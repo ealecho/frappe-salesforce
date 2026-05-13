@@ -366,7 +366,11 @@ DEFAULT_MAPPINGS: list[dict] = [
                 "frappe_field": "custom_sf_description",
                 "transform": "html_strip",
             },
-            {"sf_field": "RecordTypeId", "frappe_field": "custom_sf_record_type"},
+            # NOTE: ``Contact.RecordTypeId`` omitted by default — many NPSP
+            # orgs FLS-restrict it for the integration user, causing
+            # ``INVALID_FIELD`` 400s that abort the entire Contact sync. If
+            # your org exposes it, re-add the row in the UI:
+            #   sf_field=RecordTypeId, frappe_field=custom_sf_record_type.
             {
                 "sf_field": "ReportsToId",
                 "frappe_field": "custom_sf_reports_to",

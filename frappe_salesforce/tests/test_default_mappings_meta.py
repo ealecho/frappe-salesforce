@@ -285,6 +285,22 @@ def test_task_due_date_uses_datetime_transform():
     assert rows[0].get("transform") == "datetime"
 
 
+def test_contact_record_type_id_omitted_by_default():
+    """Regression: Contact.RecordTypeId is FLS-blocked on most NPSP orgs.
+
+    v0.0.2 had to ship a prune patch after default_mappings reintroduced
+    it; v0.1.0 must keep it out of defaults to avoid blocking syncs on
+    fresh installs.
+    """
+    contact = next(m for m in DEFAULT_MAPPINGS if m["salesforce_object"] == "Contact")
+    rows = [r for r in contact["rows"] if r.get("sf_field") == "RecordTypeId"]
+    assert not rows, (
+        "Contact.RecordTypeId is FLS-blocked on common NPSP orgs and "
+        "must NOT be in default mappings. Re-add it via the UI on orgs "
+        "that expose it."
+    )
+
+
 def test_contact_email_uses_email_table_transform():
     """Regression: Email/Phone/MobilePhone are read-only on Contact;
     sync writes the email_ids/phone_nos child tables instead."""

@@ -255,6 +255,14 @@ class BaseSyncer:
         return frappe.get_doc("Salesforce Field Mapping", name)
 
     def _soql_fields(self) -> list[str]:
+        """Build the SOQL SELECT field list for this syncer.
+
+        Aggregates every ``sf_field`` and every line of ``sf_fields``
+        across mapping rows, plus ``extra_soql_fields``. Then filters the
+        result against the SF describe response so FLS-blocked fields
+        don't cause ``INVALID_FIELD`` 400s. Dropped fields are logged
+        once per sync run for operator visibility.
+        """
         fields: list[str] = []
         if self.mapping:
             for row in self.mapping.field_mappings:
@@ -263,7 +271,54 @@ class BaseSyncer:
                 if getattr(row, "sf_fields", None):
                     fields.extend(_split_sf_fields(row.sf_fields))
         fields.extend(self.extra_soql_fields)
-        return fields
+        # Always-required fields (used by run() for HWM checkpointing
+        # and link bookkeeping). These should always be accessible — if
+        # they're not, the sync genuinely can't proceed and a 400 is the
+        # right signal.
+        always_required = {"Id", "SystemModstamp"}
+        return self._filter_fls_blocked(fields, always_required)
+
+    def _filter_fls_blocked(
+        self, fields: list[str], always_required: set[str]
+    ) -> list[str]:
+        """Drop fields not in the SF describe response (FLS-blocked).
+
+        Falls back to returning ``fields`` unchanged if describe failed
+        or returned an empty set (handled by ``client.accessible_fields``).
+        """
+        try:
+            accessible = self.client.accessible_fields(self.salesforce_object)
+        except Exception as e:
+            frappe.log_error(
+                title=f"SF accessible_fields error for {self.salesforce_object}",
+                message=str(e),
+            )
+            return fields
+        if not accessible:
+            # Describe failed or returned nothing — fail open.
+            return fields
+        kept: list[str] = []
+        dropped: list[str] = []
+        for f in fields:
+            if f in accessible or f in always_required:
+                kept.append(f)
+            else:
+                dropped.append(f)
+        if dropped:
+            frappe.log_error(
+                title=f"SF FLS-filtered {self.salesforce_object}",
+                message=(
+                    f"The integration user cannot SELECT the following "
+                    f"field(s) on {self.salesforce_object}; they were "
+                    f"dropped from the SOQL query for this run:\n\n"
+                    f"  {', '.join(sorted(dropped))}\n\n"
+                    f"To re-enable, ensure the field is exposed via FLS "
+                    f"on the integration user's profile / permission set "
+                    f"(or remove the mapping row in Salesforce Field "
+                    f"Mapping if you don't need it)."
+                ),
+            )
+        return kept
 
     def _apply_mapping(self, rec: dict[str, Any]) -> dict[str, Any]:
         values: dict[str, Any] = {}

@@ -58,8 +58,42 @@ class SalesforceClient:
         self._rate_limit_info: dict[str, int] | None = None
         self._calls_this_tick: int = 0
         self._settings_cache: Any | None = None
+        #: Cache of accessible-field name sets per SF object, keyed by
+        #: object API name. Populated lazily by ``accessible_fields()``.
+        #: One ``/sobjects/<X>/describe/`` call per object per process.
+        self._field_cache: dict[str, set[str]] = {}
         if not self.bypass_budget:
             self._preflight_check()
+
+    def accessible_fields(self, sobject: str) -> set[str]:
+        """Return the case-preserved set of SF field names the integration
+        user can SELECT from ``sobject``.
+
+        Result is cached for the life of this client instance. Used by
+        ``BaseSyncer._soql_fields()`` to defensively filter out fields
+        that are FLS-restricted on this org — preventing
+        ``INVALID_FIELD`` 400s that would abort the entire sync.
+        """
+        if sobject in self._field_cache:
+            return self._field_cache[sobject]
+        url = f"{self._base()}/sobjects/{sobject}/describe/"
+        try:
+            data = self._get(url).json()
+        except SalesforceAPIError as e:
+            # If describe fails we can't filter — return an empty set,
+            # which the syncer interprets as "don't filter, send all
+            # mapped fields and accept the 400 risk". This is a
+            # deliberate fail-open: better to attempt the sync and log a
+            # 400 than to skip the object entirely.
+            frappe.log_error(
+                title=f"SF describe failed for {sobject}",
+                message=str(e),
+            )
+            self._field_cache[sobject] = set()
+            return set()
+        names = {f.get("name") for f in data.get("fields", []) if f.get("name")}
+        self._field_cache[sobject] = names
+        return names
 
     # ------------------------------------------------------------------
     # SOQL

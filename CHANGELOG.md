@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.1.1]
+
+### Fixed
+- Removed `Contact.RecordTypeId → custom_sf_record_type` from default
+  mappings. NPSP orgs commonly FLS-restrict this field for the
+  integration user, causing `INVALID_FIELD` 400s that abort the entire
+  Contact sync before any record is fetched. The field can be re-added
+  via the Salesforce Field Mapping UI on orgs that expose it.
+- New patch `patches/v0_1_0/prune_problematic_mapping_rows` removes the
+  same row from existing sites (mirrors v0.0.2's prune strategy).
+
+### Added
+- **FLS-blocked field auto-filter (Strategy B)**: `SalesforceClient`
+  gains an `accessible_fields(sobject)` method that returns the case-
+  preserved set of fields the integration user can SELECT via SF
+  describe (one cached call per object per process).
+- `BaseSyncer._soql_fields()` now passes the assembled SOQL field list
+  through `_filter_fls_blocked()`, dropping any field absent from
+  describe and emitting an `Error Log` entry naming the dropped
+  fields. `Id` and `SystemModstamp` are always kept (they're required
+  for sync bookkeeping). The filter fails open on describe errors —
+  the syncer attempts SOQL with the unfiltered list rather than
+  skipping the object entirely.
+
+### Tests
+- `test_fls_filter.py` — 5 unit tests covering the filter logic
+  (drops blocked, keeps required, fails open on empty / exception,
+  preserves order).
+- `test_default_mappings_meta.py::test_contact_record_type_id_omitted_by_default`
+  — regression test ensuring future PRs don't reintroduce the
+  problematic row.
+
 ## [0.1.0] — Field coverage rework
 
 ### Fixed (mapping bugs from v0.0.x)
