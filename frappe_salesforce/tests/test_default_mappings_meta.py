@@ -301,6 +301,67 @@ def test_contact_record_type_id_omitted_by_default():
     )
 
 
+def test_lead_status_uses_link_transform():
+    """Regression: ``CRM Lead.status`` is a Link field, not Select."""
+    lead = next(m for m in DEFAULT_MAPPINGS if m["salesforce_object"] == "Lead")
+    rows = [
+        r
+        for r in lead["rows"]
+        if r.get("sf_field") == "Status" and r["frappe_field"] == "status"
+    ]
+    assert len(rows) == 1
+    assert rows[0].get("transform") == "lead_status_link"
+
+
+def test_deal_stage_uses_link_transform():
+    """Regression: ``CRM Deal.status`` is a Link → ``CRM Deal Status``.
+
+    The bare ``deal_stage`` transform mapped values but didn't ensure the
+    target row existed, causing ``LinkValidationError`` on clean installs.
+    """
+    opp = next(m for m in DEFAULT_MAPPINGS if m["salesforce_object"] == "Opportunity")
+    rows = [
+        r
+        for r in opp["rows"]
+        if r.get("sf_field") == "StageName" and r["frappe_field"] == "status"
+    ]
+    assert len(rows) == 1
+    assert rows[0].get("transform") == "deal_stage_link"
+
+
+def test_deal_lost_reason_uses_link_transform():
+    opp = next(m for m in DEFAULT_MAPPINGS if m["salesforce_object"] == "Opportunity")
+    rows = [
+        r
+        for r in opp["rows"]
+        if r.get("sf_field") == "StageName" and r["frappe_field"] == "lost_reason"
+    ]
+    assert len(rows) == 1
+    assert rows[0].get("transform") == "deal_lost_reason_link"
+
+
+def test_task_status_uses_link_transform():
+    task = next(m for m in DEFAULT_MAPPINGS if m["salesforce_object"] == "Task")
+    rows = [
+        r
+        for r in task["rows"]
+        if r.get("sf_field") == "Status" and r["frappe_field"] == "status"
+    ]
+    assert len(rows) == 1
+    assert rows[0].get("transform") == "task_status_link"
+
+
+def test_task_priority_uses_link_transform():
+    task = next(m for m in DEFAULT_MAPPINGS if m["salesforce_object"] == "Task")
+    rows = [
+        r
+        for r in task["rows"]
+        if r.get("sf_field") == "Priority" and r["frappe_field"] == "priority"
+    ]
+    assert len(rows) == 1
+    assert rows[0].get("transform") == "task_priority_link"
+
+
 def test_contact_email_uses_email_table_transform():
     """Regression: Email/Phone/MobilePhone are read-only on Contact;
     sync writes the email_ids/phone_nos child tables instead."""

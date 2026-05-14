@@ -753,7 +753,7 @@ DEFAULT_MAPPINGS: list[dict] = [
             {
                 "sf_field": "Status",
                 "frappe_field": "status",
-                "transform": "lead_status",
+                "transform": "lead_status_link",
             },
             {
                 "sf_field": "OwnerId",
@@ -850,12 +850,12 @@ DEFAULT_MAPPINGS: list[dict] = [
             {
                 "sf_field": "StageName",
                 "frappe_field": "status",
-                "transform": "deal_stage",
+                "transform": "deal_stage_link",
             },
             {
                 "sf_field": "StageName",
                 "frappe_field": "lost_reason",
-                "transform": "deal_lost_reason",
+                "transform": "deal_lost_reason_link",
             },
             {"sf_field": "Probability", "frappe_field": "probability"},
             {"sf_field": "NextStep", "frappe_field": "custom_sf_next_step"},
@@ -1257,12 +1257,12 @@ DEFAULT_MAPPINGS: list[dict] = [
             {
                 "sf_field": "Status",
                 "frappe_field": "status",
-                "transform": "task_status",
+                "transform": "task_status_link",
             },
             {
                 "sf_field": "Priority",
                 "frappe_field": "priority",
-                "transform": "task_priority",
+                "transform": "task_priority_link",
             },
             {
                 "sf_field": "OwnerId",

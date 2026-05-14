@@ -90,77 +90,73 @@ def employee_bucket(value: Any) -> str | None:
     return "1000+"
 
 
-def industry_link(value: Any) -> str | None:
-    """Resolve / upsert a ``CRM Industry`` record by name.
+def _ensure_link(
+    doctype: str, value: Any, *name_field_candidates: str
+) -> str | None:
+    """Resolve / upsert a Link parent by name.
 
-    Returns the docname (== industry name). ``None`` for empty input.
+    Returns the row name (== ``value``) for use as a Link field value.
+
+    Behaviour:
+    * Empty / whitespace input → ``None``.
+    * If the target DocType doesn't exist on this site (e.g. installs that
+      pre-date a particular CRM version), return the bare string so callers
+      writing into Select fields are unaffected.
+    * If a row with that name already exists → return the name.
+    * Otherwise try each ``name_field_candidates`` in turn, then fall back
+      to inserting with ``name=value`` (relies on autoname). All errors are
+      swallowed; on failure the bare string is still returned so the caller's
+      write attempt fails loudly with a LinkValidationError pinpointing
+      exactly which row was missing.
     """
-    if not value:
+    if value is None or value == "":
         return None
     name = str(value).strip()
     if not name:
         return None
-    if frappe.db.exists("CRM Industry", name):
+    # No DocType installed → callers writing to a Select field still want the
+    # mapped string; return as-is.
+    if not frappe.db.exists("DocType", doctype):
         return name
-    try:
-        frappe.get_doc({"doctype": "CRM Industry", "industry": name}).insert(
-            ignore_permissions=True
-        )
-    except Exception:
-        # Some installs name the field differently; fall back to autoname.
+    if frappe.db.exists(doctype, name):
+        return name
+    for fld in name_field_candidates:
         try:
-            frappe.get_doc({"doctype": "CRM Industry", "name": name}).insert(
+            frappe.get_doc({"doctype": doctype, fld: name}).insert(
                 ignore_permissions=True
             )
+            return name
         except Exception:
-            return None
-    return name
+            continue
+    try:
+        frappe.get_doc({"doctype": doctype, "name": name}).insert(
+            ignore_permissions=True
+        )
+        return name
+    except Exception:
+        frappe.log_error(
+            title=f"SF auto-create {doctype} failed: {name}",
+            message=frappe.get_traceback(),
+        )
+        # Return the value anyway — letting the upstream insert raise its own
+        # LinkValidationError makes the failure mode explicit per record
+        # rather than silently dropping the field.
+        return name
+
+
+def industry_link(value: Any) -> str | None:
+    """Resolve / upsert a ``CRM Industry`` record by name."""
+    return _ensure_link("CRM Industry", value, "industry")
 
 
 def lead_source_link(value: Any) -> str | None:
     """Resolve / upsert a ``CRM Lead Source`` record by name."""
-    if not value:
-        return None
-    name = str(value).strip()
-    if not name:
-        return None
-    if frappe.db.exists("CRM Lead Source", name):
-        return name
-    try:
-        frappe.get_doc(
-            {"doctype": "CRM Lead Source", "lead_source": name}
-        ).insert(ignore_permissions=True)
-    except Exception:
-        try:
-            frappe.get_doc(
-                {"doctype": "CRM Lead Source", "name": name}
-            ).insert(ignore_permissions=True)
-        except Exception:
-            return None
-    return name
+    return _ensure_link("CRM Lead Source", value, "lead_source")
 
 
 def lost_reason_link(value: Any) -> str | None:
     """Resolve / upsert a ``CRM Lost Reason`` record by name."""
-    if not value:
-        return None
-    name = str(value).strip()
-    if not name:
-        return None
-    if frappe.db.exists("CRM Lost Reason", name):
-        return name
-    try:
-        frappe.get_doc(
-            {"doctype": "CRM Lost Reason", "lost_reason": name}
-        ).insert(ignore_permissions=True)
-    except Exception:
-        try:
-            frappe.get_doc(
-                {"doctype": "CRM Lost Reason", "name": name}
-            ).insert(ignore_permissions=True)
-        except Exception:
-            return None
-    return name
+    return _ensure_link("CRM Lost Reason", value, "lost_reason")
 
 
 # ----------------------------------------------------------------------
@@ -279,6 +275,16 @@ def map_lead_status(sf_status: str | None) -> str | None:
     return LEAD_STATUS_MAP.get(sf_status, sf_status)
 
 
+def lead_status_link(sf_status: str | None) -> str | None:
+    """Map SF Lead.Status → ``CRM Lead Status``, auto-creating missing rows.
+
+    ``CRM Lead.status`` is a Link field in Frappe CRM, not a Select. SF
+    picklists are an open vocabulary; new statuses must materialise as
+    ``CRM Lead Status`` rows or the upsert dies with ``LinkValidationError``.
+    """
+    return _ensure_link("CRM Lead Status", map_lead_status(sf_status), "lead_status")
+
+
 # PEAS NPSP stages → Frappe CRM Deal statuses.
 # Standard SF stages kept for defensive coverage.
 DEAL_STAGE_MAP = {
@@ -318,6 +324,16 @@ def map_deal_stage(sf_stage: str | None) -> str | None:
     return DEAL_STAGE_MAP.get(sf_stage, sf_stage)
 
 
+def deal_stage_link(sf_stage: str | None) -> str | None:
+    """Map SF Opportunity.StageName → ``CRM Deal Status``, auto-creating missing rows.
+
+    ``CRM Deal.status`` is a Link → ``CRM Deal Status``. Without this wrapper
+    SF stages that the org has added but the Frappe site hasn't seeded
+    (e.g. ``Proposal/Quotation`` on a clean install) cause ``LinkValidationError``.
+    """
+    return _ensure_link("CRM Deal Status", map_deal_stage(sf_stage), "status", "deal_status")
+
+
 # Maps SF stages that resolve to "Lost" → a CRM Lost Reason record name.
 # Returns None for non-lost stages so the value is stripped by _upsert_doc.
 DEAL_LOST_REASON_MAP = {
@@ -332,6 +348,13 @@ def map_deal_lost_reason(sf_stage: str | None) -> str | None:
     if not sf_stage:
         return None
     return DEAL_LOST_REASON_MAP.get(sf_stage)
+
+
+def deal_lost_reason_link(sf_stage: str | None) -> str | None:
+    """SF stage → ``CRM Lost Reason`` Link, auto-creating missing rows."""
+    return _ensure_link(
+        "CRM Lost Reason", map_deal_lost_reason(sf_stage), "lost_reason"
+    )
 
 
 TASK_STATUS_MAP = {
@@ -350,6 +373,16 @@ def map_task_status(sf_status: str | None) -> str | None:
     return TASK_STATUS_MAP.get(sf_status, "Todo")
 
 
+def task_status_link(sf_status: str | None) -> str | None:
+    """Map SF Task.Status → ``CRM Task Status`` Link, auto-creating missing rows.
+
+    Newer Frappe CRM exposes ``status`` on ``CRM Task`` as a Link field; older
+    builds keep it as a Select. ``_ensure_link`` returns the bare string when
+    the DocType doesn't exist, so this works either way.
+    """
+    return _ensure_link("CRM Task Status", map_task_status(sf_status), "status")
+
+
 TASK_PRIORITY_MAP = {
     "Normal": "Medium",
     "High": "High",
@@ -361,6 +394,14 @@ def map_task_priority(sf_priority: str | None) -> str | None:
     if not sf_priority:
         return "Medium"
     return TASK_PRIORITY_MAP.get(sf_priority, "Medium")
+
+
+def task_priority_link(sf_priority: str | None) -> str | None:
+    """Map SF Task.Priority → ``CRM Task Priority`` Link, auto-creating missing rows.
+
+    Same Link-vs-Select compatibility as ``task_status_link`` (see above).
+    """
+    return _ensure_link("CRM Task Priority", map_task_priority(sf_priority), "priority")
 
 
 # ----------------------------------------------------------------------
@@ -481,11 +522,16 @@ TRANSFORMS = {
     "polymorphic_lookup": map_polymorphic,
     "campaign_lookup": map_campaign,
     "deal_stage": map_deal_stage,
+    "deal_stage_link": deal_stage_link,
     "lead_status": map_lead_status,
+    "lead_status_link": lead_status_link,
     "lead_source": lead_source_link,
     "task_status": map_task_status,
+    "task_status_link": task_status_link,
     "task_priority": map_task_priority,
+    "task_priority_link": task_priority_link,
     "deal_lost_reason": map_deal_lost_reason,
+    "deal_lost_reason_link": deal_lost_reason_link,
     "employee_bucket": employee_bucket,
     "industry_link": industry_link,
     "lost_reason_link": lost_reason_link,

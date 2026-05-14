@@ -8,18 +8,24 @@ that run via ``bench --site … run-tests``.
 
 from __future__ import annotations
 
+import frappe_salesforce.sync.transforms as tfm
 from frappe_salesforce.sync.transforms import (
     DEAL_STAGE_MAP,
     address_block,
+    deal_lost_reason_link,
+    deal_stage_link,
     email_table,
     employee_bucket,
     html_strip,
+    lead_status_link,
     map_deal_lost_reason,
     map_deal_stage,
     map_lead_status,
     map_task_priority,
     map_task_status,
     phone_table,
+    task_priority_link,
+    task_status_link,
     to_bool,
     to_date,
 )
@@ -107,6 +113,92 @@ def test_map_task_status_defaults_to_todo():
 def test_map_task_priority_defaults_to_medium():
     assert map_task_priority(None) == "Medium"
     assert map_task_priority("Normal") == "Medium"
+
+
+# ----------------------------------------------------------------------
+# Link-safe wrappers (auto-create parent rows)
+# ----------------------------------------------------------------------
+class _FakeDb:
+    """Stand-in for ``frappe.db`` that pretends every DocType exists but
+    no parent rows do. Used to drive ``_ensure_link`` through the
+    insertion code path without touching MariaDB.
+    """
+
+    def __init__(self):
+        self.existing: set[tuple[str, str]] = set()
+
+    def exists(self, doctype, name=None):
+        if name is None:
+            # frappe.db.exists("DocType", "Foo") shape
+            return True
+        return (doctype, str(name)) in self.existing
+
+
+class _FakeDoc:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def insert(self, **kw):  # noqa: D401, ARG002
+        # Simulate successful insert; record nothing — _ensure_link only
+        # cares that no exception is raised.
+        return self
+
+
+def _patch_link_internals(monkeypatch):
+    fake_db = _FakeDb()
+    monkeypatch.setattr(tfm.frappe, "db", fake_db)
+    monkeypatch.setattr(tfm.frappe, "get_doc", lambda payload: _FakeDoc(payload))
+    return fake_db
+
+
+def test_lead_status_link_passthrough_unknown(monkeypatch):
+    _patch_link_internals(monkeypatch)
+    assert lead_status_link("Custom New Status") == "Custom New Status"
+
+
+def test_lead_status_link_translates_known(monkeypatch):
+    _patch_link_internals(monkeypatch)
+    assert lead_status_link("Open - Not Contacted") == "New"
+
+
+def test_lead_status_link_none(monkeypatch):
+    _patch_link_internals(monkeypatch)
+    assert lead_status_link(None) is None
+    assert lead_status_link("") is None
+
+
+def test_deal_stage_link_passthrough_unknown(monkeypatch):
+    _patch_link_internals(monkeypatch)
+    # The original failing case: PEAS stage that maps via DEAL_STAGE_MAP →
+    # "Proposal/Quotation", which must resolve through link upsert.
+    assert deal_stage_link("Warm proposal to existing funder") == "Proposal/Quotation"
+
+
+def test_deal_stage_link_unknown_passthrough(monkeypatch):
+    _patch_link_internals(monkeypatch)
+    assert deal_stage_link("Brand New Custom Stage") == "Brand New Custom Stage"
+
+
+def test_deal_lost_reason_link_returns_none_for_won(monkeypatch):
+    _patch_link_internals(monkeypatch)
+    assert deal_lost_reason_link("Won") is None
+
+
+def test_deal_lost_reason_link_known(monkeypatch):
+    _patch_link_internals(monkeypatch)
+    assert deal_lost_reason_link("Withdrawn") == "Withdrawn"
+
+
+def test_task_status_link_defaults_to_todo(monkeypatch):
+    _patch_link_internals(monkeypatch)
+    assert task_status_link(None) == "Todo"
+    assert task_status_link("Garbage") == "Todo"
+
+
+def test_task_priority_link_defaults_to_medium(monkeypatch):
+    _patch_link_internals(monkeypatch)
+    assert task_priority_link(None) == "Medium"
+    assert task_priority_link("Normal") == "Medium"
 
 
 # ----------------------------------------------------------------------
