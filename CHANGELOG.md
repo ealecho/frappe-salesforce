@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.1.8]
+
+### Fixed
+- `Token persist verification failed: wrote len=N but read back len=N`
+  raised by `test_connection` and scheduler runs on v0.1.7. Root cause:
+  Frappe's `get_decrypted_password` is memoised in
+  `frappe.local.request_cache` for the lifetime of a request; the
+  v0.1.7 write-verify readback inside the same request returned the
+  token cached *before* the write, not the value just persisted to
+  `__Auth`. Lengths matched (both real SF tokens cluster around the
+  same size) so the symptom was misleading. Frappe's shared Redis
+  password cache can cause the same shadowing across workers.
+
+### Changed (auth.py)
+- Removed the v0.1.7 atomic write-verify block. It was generating
+  false positives against an in-process cache rather than catching a
+  real `__Auth` write failure. The remaining v0.1.7 protections (JWT
+  exp as source of truth, UTC math, naive-UTC persistence, token
+  `.strip()`) are sufficient.
+- New helper `_invalidate_password_cache(doctype, fieldname)`. Called
+  after every successful token write and from
+  `invalidate_cached_token`. Drops:
+  1. The in-process `frappe.local.request_cache` bucket for
+     `get_decrypted_password` (the actual culprit behind v0.1.7's
+     false positives).
+  2. The shared Redis cache entries under all known hash names
+     (`__password`, `passwords`, `frappe.utils.password`) and key
+     shapes — best-effort, swallowing errors.
+
+### Changed (patch)
+- `patches/v0_1_0/clear_desynced_sf_token.py` additionally evicts the
+  Redis password-cache entry for `Salesforce Settings.access_token`
+  so the first post-migrate read isn't shadowed by a pre-deploy stale
+  entry. Still idempotent.
+
 ## [0.1.7]
 
 ### Fixed
