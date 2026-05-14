@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.1.7]
+
+### Fixed
+- Persistent `INVALID_AUTH_HEADER` / `INVALID_JWT_FORMAT` 401s on
+  non-UTC sites. Root cause confirmed by decoding the cached token's
+  JWT payload on a staging site (`Europe/London`):
+  - SF embedded `exp` in the JWT (UTC absolute time): ~14:20 UTC.
+  - Our persisted `token_expires_at`: ~19:01 local naive (=18:01 UTC),
+    written via `frappe.utils.add_to_date(now_datetime(), seconds=…)`,
+    which adds to *local naive* time. The result was a stored expiry
+    nearly 4 hours after the token's true SF-side expiry. The cache
+    happily served an expired token; SF correctly rejected it.
+  - Plus: the persisted `(access_token, token_expires_at)` pair can
+    desync if one Frappe `set_single_value` lands but the other
+    doesn't, with no detection.
+
+### Changed (auth.py)
+- `_cached_token_valid()` now decodes the JWT's own `exp` claim and
+  compares to UTC `datetime.now(timezone.utc)`. The JWT IS the source
+  of truth; stored `token_expires_at` is advisory only and consulted
+  only for non-JWT (legacy opaque) session IDs.
+- `_do_fetch_new_token()` stores `token_expires_at` as **naive UTC**
+  (consistent with the JWT-derived expiry it reads), not naive local.
+  Prefers the JWT's `exp` claim; falls back to `expires_in` only when
+  the token isn't a JWT.
+- `_do_fetch_new_token()` sanitises the returned `access_token` via
+  `.strip()` before persisting (defense against any whitespace SF
+  might emit in edge cases).
+- `_do_fetch_new_token()` performs an atomic write-verify after
+  `frappe.db.commit()`: reads the encrypted `access_token` back and
+  raises `SalesforceAuthError` if it doesn't match what was just
+  written. Catches silent `__Auth` write failures at the source
+  instead of caching a desynced pair.
+- New helper `_decode_jwt_exp(token)` parses the JWT payload
+  (signature unverified — we trust the token's own self-describing
+  metadata for expiry only).
+
+### Migration
+- `patches/v0_1_0/clear_desynced_sf_token` — nulls the current
+  `token_expires_at` once so the first post-deploy scheduler tick
+  re-fetches a fresh token under the corrected UTC math. Idempotent.
+
 ## [0.1.6]
 
 ### Fixed
