@@ -1,6 +1,6 @@
 [project]
 name = "frappe_salesforce"
-version = "0.1.3"
+version = "0.1.4"
 description = "Salesforce (SOQL) integration for Frappe CRM"
 authors = [
     {name = "Your Name", email = "you@example.com"}

@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.1.4]
+
+### Fixed
+- `CharacterLengthExceededError` on `CRM Deal.custom_sf_file_location`
+  during Opportunity sync. SF stores long network-share paths wrapped
+  in `<strong>` HTML; the original 140-char `Data` field overflowed.
+  Symptom: `'<strong>File Location</strong>' (C:\...) will get
+  truncated, as max characters allowed is 140`.
+- The `File_location__c → custom_sf_file_location` mapping row gains
+  the `html_strip` transform so HTML wrappers don't leak into Frappe.
+
+### Added
+- `BaseSyncer._truncate_to_max_length()` — generic safety net that
+  silently truncates scalar string values to the target field's max
+  length (cached per syncer via `frappe.get_meta`). Logs once per
+  `(doctype, field)` per run with a sample of the offending value, so
+  oversized fields are surfaced for widening rather than aborting the
+  whole record. Applies to `Data` / `Link` / `Select` (which enforce
+  the cap); Long/Small/Markdown text are untouched.
+
+### Migration
+- `patches/v0_1_0/widen_file_location` — converts
+  `CRM Deal.custom_sf_file_location` from `Data` to `Long Text` on
+  existing sites. Idempotent.
+- `patches/v0_1_0/set_file_location_html_strip` — backfills the
+  `html_strip` transform on the existing mapping row. Idempotent.
+
 ## [0.1.3]
 
 ### Fixed
