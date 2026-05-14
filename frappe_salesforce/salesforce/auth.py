@@ -12,6 +12,8 @@ Docs:
 
 from __future__ import annotations
 
+import base64
+import datetime
 import json
 import time
 
@@ -133,19 +135,48 @@ class SalesforceAuth:
         return f"{self._audience()}{TOKEN_ENDPOINT}"
 
     def _cached_token_valid(self) -> bool:
-        # Read live from DB rather than ``self.settings`` (a snapshot
-        # taken in ``__init__``). A concurrent worker may have just
-        # invalidated or refreshed the token; trusting the snapshot
-        # produces stale-expiry bugs that manifest as ``INVALID_AUTH_HEADER``
-        # 401s under load.
+        """Determine whether the cached token can be safely reused.
+
+        The token IS the source of truth: modern Salesforce session tokens
+        are JWTs that embed their own ``exp`` claim. We decode that claim
+        and compare against UTC wall-clock time. This is robust against
+        TZ confusion (``token_expires_at`` is naive local in the DB) and
+        against desync between ``access_token`` and ``token_expires_at``
+        (e.g. one write succeeds, the other doesn't).
+
+        If the token isn't a JWT (older orgs, opaque session IDs) we fall
+        back to the stored ``token_expires_at`` interpreted as UTC.
+        """
+        token = get_decrypted_password(
+            self.SETTINGS_DOCTYPE,
+            self.SETTINGS_DOCTYPE,
+            "access_token",
+            raise_exception=False,
+        )
+        if not token or len(token.strip()) < MIN_PLAUSIBLE_TOKEN_LEN:
+            return False
+
+        # Primary path: trust the JWT's own exp claim.
+        jwt_exp = _decode_jwt_exp(token)
+        if jwt_exp is not None:
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            return (jwt_exp - now_utc).total_seconds() > EXPIRY_SKEW_SECONDS
+
+        # Fallback: opaque session ID — trust stored expiry, treated as UTC.
         expires_at = frappe.db.get_single_value(
             self.SETTINGS_DOCTYPE, "token_expires_at"
         )
         if not expires_at:
             return False
+        # Stored value is naive; we now write UTC into this field, but
+        # older rows may be naive-local. We accept the small risk of a
+        # one-off bad cache hit during the transition — the post-401
+        # refresh path will heal it. Going forward all writes are UTC.
         expires_dt = get_datetime(expires_at)
-        now = get_datetime(now_datetime())
-        return (expires_dt - now).total_seconds() > EXPIRY_SKEW_SECONDS
+        if expires_dt.tzinfo is None:
+            expires_dt = expires_dt.replace(tzinfo=datetime.timezone.utc)
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        return (expires_dt - now_utc).total_seconds() > EXPIRY_SKEW_SECONDS
 
     def _load_private_key(self) -> str:
         raw = get_decrypted_password(
@@ -237,9 +268,25 @@ class SalesforceAuth:
         instance_url = data.get("instance_url") or self.settings.instance_url
         if not access_token:
             raise SalesforceAuthError(f"Token response missing access_token: {data}")
+        # Defensive sanitisation: even though SF returns clean values, any
+        # whitespace/control char that survives into the persisted token
+        # would later poison the Authorization header.
+        access_token = access_token.strip()
 
-        expires_in = int(data.get("expires_in") or DEFAULT_TOKEN_LIFETIME)
-        expires_at = frappe.utils.add_to_date(now_datetime(), seconds=expires_in)
+        # Prefer the JWT's embedded exp claim if present (modern SF orgs);
+        # it is the authoritative expiry. Fall back to expires_in (legacy
+        # opaque session IDs).
+        jwt_exp = _decode_jwt_exp(access_token)
+        if jwt_exp is not None:
+            # Store as naive UTC (Frappe Datetime fields are naive). We
+            # always interpret this field as UTC on read.
+            expires_at = jwt_exp.replace(tzinfo=None)
+        else:
+            expires_in = int(data.get("expires_in") or DEFAULT_TOKEN_LIFETIME)
+            expires_at = (
+                datetime.datetime.now(datetime.timezone.utc)
+                + datetime.timedelta(seconds=expires_in)
+            ).replace(tzinfo=None)
 
         # Persist for future calls.
         frappe.db.set_single_value(self.SETTINGS_DOCTYPE, "access_token", access_token)
@@ -248,6 +295,27 @@ class SalesforceAuth:
             self.SETTINGS_DOCTYPE, "token_expires_at", expires_at
         )
         frappe.db.commit()
+
+        # Atomic write-verify (Plan C): immediately read back what we
+        # wrote. If the encrypted-field write to access_token silently
+        # failed (a class of bug we've seen on Frappe Cloud where the
+        # ``__Auth`` row update doesn't actually land), we'd otherwise
+        # cache a desynced (access_token, token_expires_at) pair and
+        # 401 on every subsequent call until expiry. Better to fail
+        # loudly than to poison the cache.
+        readback = get_decrypted_password(
+            self.SETTINGS_DOCTYPE,
+            self.SETTINGS_DOCTYPE,
+            "access_token",
+            raise_exception=False,
+        )
+        if (readback or "").strip() != access_token:
+            raise SalesforceAuthError(
+                "Token persist verification failed: wrote "
+                f"len={len(access_token)} but read back "
+                f"len={len((readback or '').strip())}. Likely an encrypted-field "
+                "write that did not commit; check site DB / __Auth table."
+            )
 
         return access_token, instance_url
 
@@ -320,3 +388,31 @@ def _invalid_grant_hint(body: dict) -> str:
             "Profile or a Permission Set to the app."
         )
     return ""
+
+
+def _decode_jwt_exp(token: str) -> datetime.datetime | None:
+    """Return the ``exp`` claim of ``token`` as a tz-aware UTC datetime.
+
+    Returns ``None`` if the token isn't a parseable JWT or has no ``exp``
+    claim. Used as the source of truth for token expiry: the JWT is
+    self-describing, so we don't have to trust separately-stored metadata
+    (``token_expires_at``) that can desync from ``access_token``.
+
+    Signature is NOT verified — we trust SF to have given us its own
+    signed token, and we're only reading expiry. The signature would
+    require SF's JWKS which we don't have.
+    """
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        payload_b64 = parts[1]
+        # Restore base64 padding stripped by JWT encoding.
+        padded = payload_b64 + "=" * ((4 - len(payload_b64) % 4) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded))
+        exp = payload.get("exp")
+        if not isinstance(exp, (int, float)):
+            return None
+        return datetime.datetime.fromtimestamp(int(exp), datetime.timezone.utc)
+    except Exception:
+        return None
