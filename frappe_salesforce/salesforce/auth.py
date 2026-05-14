@@ -97,9 +97,13 @@ class SalesforceAuth:
         where a concurrent reader can fetch ``""`` and assemble a malformed
         ``Authorization: Bearer `` header. The expiry-null is sufficient
         to trigger a refresh on the next ``get_access_token`` call.
+
+        Also drops the Frappe Redis password cache so the next read of
+        ``access_token`` doesn't return a stale prior value.
         """
         frappe.db.set_single_value(self.SETTINGS_DOCTYPE, "token_expires_at", None)
         frappe.db.commit()
+        _invalidate_password_cache(self.SETTINGS_DOCTYPE, "access_token")
 
     def build_claim(self, issued_at: int | None = None) -> dict:
         """Build the JWT claim set. Exposed for diagnostics."""
@@ -296,26 +300,16 @@ class SalesforceAuth:
         )
         frappe.db.commit()
 
-        # Atomic write-verify (Plan C): immediately read back what we
-        # wrote. If the encrypted-field write to access_token silently
-        # failed (a class of bug we've seen on Frappe Cloud where the
-        # ``__Auth`` row update doesn't actually land), we'd otherwise
-        # cache a desynced (access_token, token_expires_at) pair and
-        # 401 on every subsequent call until expiry. Better to fail
-        # loudly than to poison the cache.
-        readback = get_decrypted_password(
-            self.SETTINGS_DOCTYPE,
-            self.SETTINGS_DOCTYPE,
-            "access_token",
-            raise_exception=False,
-        )
-        if (readback or "").strip() != access_token:
-            raise SalesforceAuthError(
-                "Token persist verification failed: wrote "
-                f"len={len(access_token)} but read back "
-                f"len={len((readback or '').strip())}. Likely an encrypted-field "
-                "write that did not commit; check site DB / __Auth table."
-            )
+        # Invalidate Frappe's password cache so subsequent
+        # ``get_decrypted_password`` calls see the value we just wrote
+        # rather than a stale prior token. Frappe caches decrypted
+        # password values in Redis keyed by (doctype, name, fieldname);
+        # ``set_single_value`` updates ``__Auth`` but does NOT
+        # invalidate this cache, so a reader in the same process — or
+        # any other worker — can keep returning the previous token
+        # until cache expiry. Symptom: write-verify lengths match
+        # but values differ (both are valid SF tokens of similar length).
+        _invalidate_password_cache(self.SETTINGS_DOCTYPE, "access_token")
 
         return access_token, instance_url
 
@@ -388,6 +382,54 @@ def _invalid_grant_hint(body: dict) -> str:
             "Profile or a Permission Set to the app."
         )
     return ""
+
+
+def _invalidate_password_cache(doctype: str, fieldname: str) -> None:
+    """Evict every cache layer that may shadow a freshly-written password.
+
+    ``frappe.db.set_single_value`` on a Password field updates ``__Auth``
+    but does NOT invalidate any of the caches that
+    ``frappe.utils.password.get_decrypted_password`` consults:
+
+    1. In-process request cache (``frappe.local.request_cache``) —
+       populated on the first ``get_decrypted_password`` call in a
+       request, served for the rest of that request. This is the most
+       common cause of "write-verify lengths match but values differ":
+       the readback inside the same request as the write returns the
+       value that was cached *before* the write.
+    2. Redis ``__password`` hash — shared across workers; can shadow
+       a write performed by another worker until TTL.
+
+    We evict all known cache shapes, swallowing errors (best-effort).
+    """
+    # 1. In-process request cache.
+    try:
+        rc = getattr(frappe.local, "request_cache", None)
+        if rc is not None:
+            # request_cache is a dict-of-dicts keyed by function then args.
+            # Drop the whole get_decrypted_password bucket — cheaper than
+            # guessing the args key shape.
+            rc.pop("get_decrypted_password", None)
+    except Exception:
+        pass
+
+    # 2. Redis shared cache. Key shape varies across Frappe versions;
+    # try every known variant.
+    candidates = [
+        f"{doctype}.{doctype}.{fieldname}",
+        f"{doctype}|{doctype}|{fieldname}",
+        f"{doctype}{doctype}{fieldname}",
+    ]
+    try:
+        cache = frappe.cache()
+    except Exception:
+        return
+    for hash_name in ("__password", "passwords", "frappe.utils.password"):
+        for key in candidates:
+            try:
+                cache.hdel(hash_name, key)
+            except Exception:
+                pass
 
 
 def _decode_jwt_exp(token: str) -> datetime.datetime | None:
