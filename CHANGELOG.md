@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.1.3]
+
+### Fixed
+- `LinkValidationError` on clean installs when SF picklist values land in
+  Frappe CRM Link fields. The bare `deal_stage` / `lead_status` /
+  `task_status` / `task_priority` / `deal_lost_reason` transforms only
+  mapped values; they didn't ensure the target Link parent existed.
+  Symptom on staging: `Could not find Status: Proposal/Quotation` during
+  `OpportunitySyncer` upsert. Same class as the v0.1.0 `lead_source` fix
+  but for the other picklists.
+
+### Added
+- `_ensure_link(doctype, value, *name_field_candidates)` shared helper in
+  `sync/transforms.py` — idempotent upsert of a Link parent by name.
+  Tolerates missing DocType (returns the bare string) so the same
+  transform works against installs whose CRM still uses Select fields.
+- New transforms registered in the dispatcher:
+  - `deal_stage_link` — `map_deal_stage` + `CRM Deal Status` upsert
+  - `lead_status_link` — `map_lead_status` + `CRM Lead Status` upsert
+  - `task_status_link` — `map_task_status` + `CRM Task Status` upsert
+  - `task_priority_link` — `map_task_priority` + `CRM Task Priority` upsert
+  - `deal_lost_reason_link` — `map_deal_lost_reason` + `CRM Lost Reason` upsert
+- `industry_link`, `lead_source_link`, `lost_reason_link` refactored to
+  delegate to `_ensure_link` (behaviour preserved; less duplication).
+- `Salesforce Field Mapping Row.transform` Select options extended with
+  the five new `_link` variants.
+
+### Migration
+- `patches/v0_1_0/safen_link_transforms` — rewrites mapping rows on
+  existing sites from each bare picklist transform to its `_link`
+  variant. Idempotent; only touches rows still using the old names.
+
+### Tests
+- `test_transforms.py` — 10 new asserts exercising each `_link` wrapper
+  via stubbed `frappe.db` / `frappe.get_doc` (no site required).
+- `test_default_mappings_meta.py` — five regression tests asserting
+  `Lead.Status`, `Opportunity.StageName→status`,
+  `Opportunity.StageName→lost_reason`, `Task.Status`, `Task.Priority`
+  default to their `_link` transforms.
+
 ## [0.1.2]
 
 ### Changed
