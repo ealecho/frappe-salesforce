@@ -198,6 +198,7 @@ class SalesforceClient:
             _daily_counter_incr()
 
         if resp.status_code == 401 and not _retried:
+            self._log_401_diagnostic(url, resp)
             self.auth.invalidate_cached_token()
             self.token, self.instance_url = self.auth.get_access_token()
             return self._get(url, params=params, _retried=True)
@@ -218,6 +219,51 @@ class SalesforceClient:
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
+
+    def _log_401_diagnostic(self, url: str, resp: requests.Response) -> None:
+        """One-shot diagnostic log for 401 responses.
+
+        Captures token shape (length only, never the value), snapshot vs
+        live expiry, and the SF response body. Throttled to once per
+        client instance to avoid Error Log spam when a token is
+        genuinely revoked and every call fails.
+        """
+        if getattr(self, "_logged_401", False):
+            return
+        self._logged_401 = True
+        token_len = len((self.token or "").strip())
+        try:
+            snapshot_expiry = getattr(self.auth.settings, "token_expires_at", None)
+        except Exception:
+            snapshot_expiry = "<unreadable>"
+        try:
+            live_expiry = frappe.db.get_single_value(
+                "Salesforce Settings", "token_expires_at"
+            )
+        except Exception:
+            live_expiry = "<unreadable>"
+        try:
+            body = resp.json()
+        except ValueError:
+            body = {"raw": resp.text[:500]}
+        try:
+            frappe.log_error(
+                title="Salesforce 401 — refreshing token",
+                message=(
+                    f"URL: {url}\n"
+                    f"Token length (chars): {token_len}\n"
+                    f"Snapshot token_expires_at (auth.__init__): "
+                    f"{snapshot_expiry!r}\n"
+                    f"Live token_expires_at (db read): {live_expiry!r}\n"
+                    f"Response body: {body!r}\n\n"
+                    f"This is logged once per client instance. Repeated "
+                    f"401s within the same tick indicate the refreshed "
+                    f"token is itself being rejected — check Connected "
+                    f"App policy and IP allowlist."
+                ),
+            )
+        except Exception:
+            pass
 
     def _record_rate_limit(self, resp: requests.Response) -> None:
         header = resp.headers.get("Sforce-Limit-Info")

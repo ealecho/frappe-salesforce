@@ -8,6 +8,7 @@ import frappe
 from frappe.utils import get_datetime, now_datetime
 
 from frappe_salesforce.salesforce.client import SalesforceClient
+from frappe_salesforce.salesforce.exceptions import SalesforceAPIError
 from frappe_salesforce.salesforce.soql import build_incremental_query
 
 from .transforms import apply_transform
@@ -15,6 +16,12 @@ from .transforms import apply_transform
 #: Commit advanced high-water mark every N successfully processed records
 #: so a crash mid-run doesn't force reprocessing the whole page next tick.
 HWM_CHECKPOINT_EVERY = 50
+
+#: Tolerate this many consecutive 401s inside the SOQL pagination loop
+#: before aborting the syncer. The client already does one transparent
+#: refresh-and-retry per call; consecutive 401s here mean the refreshed
+#: token is itself being rejected and continuing is futile.
+MAX_CONSECUTIVE_AUTH_FAILURES = 3
 
 
 class BaseSyncer:
@@ -57,10 +64,43 @@ class BaseSyncer:
         new_hwm = get_datetime(since).replace(tzinfo=None) if since else None
         calls_before = self.client.calls_this_tick
         processed_since_checkpoint = 0
+        auth_failures = 0
 
         try:
-            for rec in self.client.query(soql):
+            iterator = self.client.query(soql)
+            while True:
                 try:
+                    rec = next(iterator)
+                except StopIteration:
+                    break
+                except SalesforceAPIError as e:
+                    # 401 inside the pagination loop means the client's
+                    # transparent refresh-and-retry has already failed once.
+                    # Allow a small number of consecutive auth failures
+                    # (transient network/SF blips), but bail this syncer
+                    # cleanly after the threshold so the orchestrator can
+                    # move to the next object instead of looping forever.
+                    if getattr(e, "status_code", None) == 401:
+                        auth_failures += 1
+                        frappe.log_error(
+                            title=(
+                                f"SF auth failure during "
+                                f"{self.salesforce_object} sync "
+                                f"({auth_failures}/{MAX_CONSECUTIVE_AUTH_FAILURES})"
+                            ),
+                            message=str(e),
+                        )
+                        if auth_failures >= MAX_CONSECUTIVE_AUTH_FAILURES:
+                            # Surface to the orchestrator's per-syncer
+                            # try/except so it logs and continues with
+                            # the next syncer rather than aborting the
+                            # whole tick.
+                            raise
+                        continue
+                    raise
+
+                try:
+                    auth_failures = 0  # any successful fetch resets the counter
                     self._process_record(rec)
                     self.log.fetched = (self.log.fetched or 0) + 1
                     modstamp = get_datetime(rec["SystemModstamp"]).replace(tzinfo=None)

@@ -20,6 +20,7 @@ import jwt
 import requests
 from frappe.utils import get_datetime, now_datetime
 from frappe.utils.password import get_decrypted_password
+from frappe.utils.synchronization import filelock
 
 from .exceptions import SalesforceAuthError, SalesforceConfigurationError
 
@@ -30,6 +31,14 @@ EXPIRY_SKEW_SECONDS = 60
 DEFAULT_TOKEN_LIFETIME = 3600
 # Max JWT lifetime accepted by Salesforce is 3 minutes; we use slightly less.
 JWT_LIFETIME_SECONDS = 180
+# A valid Salesforce session token is ~100+ chars; anything materially
+# shorter is almost certainly a leftover empty string / corrupted blob.
+MIN_PLAUSIBLE_TOKEN_LEN = 20
+# Cross-process refresh mutex name (resolves to a file lock under the
+# bench's lock dir). Prevents stampedes when multiple scheduler workers
+# all wake up post-expiry.
+TOKEN_REFRESH_LOCK = "sf_token_refresh"
+TOKEN_REFRESH_LOCK_TIMEOUT = 30
 
 
 class SalesforceAuth:
@@ -64,14 +73,31 @@ class SalesforceAuth:
                 "access_token",
                 raise_exception=False,
             )
-            if token and self.settings.instance_url:
-                return token, self.settings.instance_url
+            instance_url = frappe.db.get_single_value(
+                self.SETTINGS_DOCTYPE, "instance_url"
+            )
+            # Defensive shape check: an empty / truncated token would
+            # produce an ``INVALID_AUTH_HEADER`` 401 on the next call.
+            # If the cached value is implausible, force a refresh.
+            if (
+                token
+                and len(token.strip()) >= MIN_PLAUSIBLE_TOKEN_LEN
+                and instance_url
+            ):
+                return token, instance_url
         return self._fetch_new_token()
 
     def invalidate_cached_token(self) -> None:
-        """Clear cached token so next call refreshes."""
-        frappe.db.set_single_value(self.SETTINGS_DOCTYPE, "access_token", "")
+        """Clear cached token so next call refreshes.
+
+        We null out ``token_expires_at`` only — writing an empty string to
+        the encrypted ``access_token`` field creates an intermediate state
+        where a concurrent reader can fetch ``""`` and assemble a malformed
+        ``Authorization: Bearer `` header. The expiry-null is sufficient
+        to trigger a refresh on the next ``get_access_token`` call.
+        """
         frappe.db.set_single_value(self.SETTINGS_DOCTYPE, "token_expires_at", None)
+        frappe.db.commit()
 
     def build_claim(self, issued_at: int | None = None) -> dict:
         """Build the JWT claim set. Exposed for diagnostics."""
@@ -107,7 +133,14 @@ class SalesforceAuth:
         return f"{self._audience()}{TOKEN_ENDPOINT}"
 
     def _cached_token_valid(self) -> bool:
-        expires_at = self.settings.token_expires_at
+        # Read live from DB rather than ``self.settings`` (a snapshot
+        # taken in ``__init__``). A concurrent worker may have just
+        # invalidated or refreshed the token; trusting the snapshot
+        # produces stale-expiry bugs that manifest as ``INVALID_AUTH_HEADER``
+        # 401s under load.
+        expires_at = frappe.db.get_single_value(
+            self.SETTINGS_DOCTYPE, "token_expires_at"
+        )
         if not expires_at:
             return False
         expires_dt = get_datetime(expires_at)
@@ -141,6 +174,36 @@ class SalesforceAuth:
         return key
 
     def _fetch_new_token(self) -> tuple[str, str]:
+        # Serialize concurrent refreshes across workers. Without this,
+        # two scheduler ticks waking simultaneously can both POST to
+        # ``/services/oauth2/token`` and clobber each other's cached
+        # token writes (the loser's response races the winner's commit,
+        # producing a brief window where the persisted token is from
+        # one request but the in-memory token returned by the other
+        # caller comes from a different request — the asymmetry shows
+        # up as ``INVALID_AUTH_HEADER`` 401s on the next REST call).
+        with filelock(TOKEN_REFRESH_LOCK, timeout=TOKEN_REFRESH_LOCK_TIMEOUT):
+            # Double-checked locking: another worker may have refreshed
+            # while we were blocked on the mutex. If so, reuse its result.
+            if self._cached_token_valid():
+                token = get_decrypted_password(
+                    self.SETTINGS_DOCTYPE,
+                    self.SETTINGS_DOCTYPE,
+                    "access_token",
+                    raise_exception=False,
+                )
+                instance_url = frappe.db.get_single_value(
+                    self.SETTINGS_DOCTYPE, "instance_url"
+                )
+                if (
+                    token
+                    and len(token.strip()) >= MIN_PLAUSIBLE_TOKEN_LEN
+                    and instance_url
+                ):
+                    return token, instance_url
+            return self._do_fetch_new_token()
+
+    def _do_fetch_new_token(self) -> tuple[str, str]:
         private_key = self._load_private_key()
         claim = self.build_claim()
 
