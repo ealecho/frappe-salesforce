@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.5]
+
+### Fixed
+- Hotfix for 0.1.4 migration: Frappe rejects `Data → Long Text`
+  fieldtype change (`ALLOWED_FIELDTYPE_CHANGE` only permits
+  `Data <-> Small Text` and `Data <-> Text`). Switched
+  `custom_sf_file_location` to `Small Text` and updated the
+  `widen_file_location` patch accordingly. Added a `_small_text` helper
+  in `setup/custom_fields.py` to make the intent explicit for any
+  future Data-overflow fixes.
+
 ## [0.1.4]
 
 ### Fixed
@@ -22,8 +33,10 @@
 
 ### Migration
 - `patches/v0_1_0/widen_file_location` — converts
-  `CRM Deal.custom_sf_file_location` from `Data` to `Long Text` on
-  existing sites. Idempotent.
+  `CRM Deal.custom_sf_file_location` from `Data` to `Small Text` on
+  existing sites. We use Small Text (not Long Text) because Frappe's
+  `ALLOWED_FIELDTYPE_CHANGE` only permits `Data <-> Small Text` /
+  `Data <-> Text`. Idempotent.
 - `patches/v0_1_0/set_file_location_html_strip` — backfills the
   `html_strip` transform on the existing mapping row. Idempotent.
 
