@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.1.6]
+
+### Fixed
+- Intermittent `INVALID_AUTH_HEADER` / `INVALID_JWT_FORMAT` 401s during
+  scheduled sync. Root causes:
+  1. `_cached_token_valid()` read `token_expires_at` from a snapshot
+     taken in `SalesforceAuth.__init__`. A concurrent worker that just
+     refreshed (or invalidated) the token left this caller working off
+     a stale expiry.
+  2. `invalidate_cached_token()` wrote an empty string to the
+     encrypted `access_token` field, creating an intermediate state
+     where a concurrent reader could fetch `""` and assemble a
+     malformed `Authorization: Bearer ` header.
+  3. No cross-process mutex around `_fetch_new_token()`. Two scheduler
+     workers waking simultaneously could both POST to the token
+     endpoint and race their cached-token writes.
+  4. Cached token shape was never validated — a truncated / corrupted
+     blob would round-trip through `get_access_token` and immediately
+     fail at Salesforce.
+
+### Changed
+- `auth._cached_token_valid()` now reads `token_expires_at` live via
+  `frappe.db.get_single_value` instead of `self.settings`.
+- `auth.get_access_token()` validates the cached token has at least
+  `MIN_PLAUSIBLE_TOKEN_LEN` chars before returning it; otherwise
+  refreshes.
+- `auth.invalidate_cached_token()` nulls `token_expires_at` only;
+  never writes an empty `access_token`.
+- `auth._fetch_new_token()` wraps the actual fetch in
+  `frappe.utils.synchronization.filelock("sf_token_refresh",
+  timeout=30)` with a double-checked-locking guard so a contending
+  worker reuses the freshly-cached token rather than re-fetching.
+- `client._get()` emits a one-shot diagnostic `log_error` on the first
+  401 per client instance, capturing token length (never the value),
+  snapshot-vs-live expiry, and the SF response body.
+- `BaseSyncer.run()` catches `SalesforceAPIError(status_code=401)`
+  inside the SOQL pagination loop, increments a local counter, and
+  aborts the syncer after 3 consecutive auth failures (allowing the
+  orchestrator to continue with the next object). Single failures are
+  logged but tolerated.
+
+### Migration
+- None. Pure code-level fix.
+
 ## [0.1.5]
 
 ### Fixed
