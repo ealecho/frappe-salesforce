@@ -141,6 +141,20 @@ def _long_text(name: str, label: str, **kw) -> dict:
     }
 
 
+def _small_text(name: str, label: str, **kw) -> dict:
+    """Use for fields converted from Data — Frappe only allows
+    Data <-> Small Text and Data <-> Text fieldtype changes on existing
+    Custom Fields (see ALLOWED_FIELDTYPE_CHANGE in customize_form.py).
+    """
+    return {
+        "fieldname": name,
+        "label": label,
+        "fieldtype": "Small Text",
+        "no_copy": 1,
+        **kw,
+    }
+
+
 CRM_ORGANIZATION_FIELDS: list[dict] = [
     SF_ID_FIELD,
     # ---- Standard SF Account fields ----
@@ -506,7 +520,7 @@ CRM_DEAL_FIELDS: list[dict] = [
     _long_text("custom_sf_notes", "Notes"),
     # SF stores long file paths (often deep network shares wrapped in HTML);
     # 140-char Data overflows. Small Text avoids the cap.
-    _long_text("custom_sf_file_location", "File Location"),
+    _small_text("custom_sf_file_location", "File Location"),
     _int("custom_sf_installment_number", "Installment Number"),
     _date("custom_sf_due_date_of_installment", "Due Date of Installment"),
     _data("custom_sf_package", "Package"),
