@@ -338,10 +338,66 @@ class BaseSyncer:
                 if raw is None and row.default_value:
                     raw = row.default_value
             transformed = apply_transform(row.transform, raw)
-            # Multi-input transforms targeting child tables encode the target
-            # via ``frappe_field`` prefix ``__table:<fieldname>``.
+            # Truncate scalar string values to the target field's max length
+            # to avoid ``CharacterLengthExceededError`` aborting the whole
+            # record. SF text fields routinely exceed Frappe ``Data``'s
+            # 140-char default; the alternative — failing the upsert — is
+            # strictly worse than dropping the trailing characters.
+            transformed = self._truncate_to_max_length(
+                row.frappe_field, transformed, sf_id=rec.get("Id")
+            )
             values[row.frappe_field] = transformed
         return values
+
+    # Cache target-field metadata per syncer instance to avoid repeated
+    # ``frappe.get_meta`` calls (one per record per row otherwise).
+    _max_length_cache: dict[str, int | None]
+
+    def _truncate_to_max_length(
+        self, frappe_field: str, value: Any, sf_id: str | None = None
+    ) -> Any:
+        if not isinstance(value, str) or not value:
+            return value
+        cache = self.__dict__.setdefault("_max_length_cache", {})
+        if frappe_field not in cache:
+            try:
+                meta = frappe.get_meta(self.frappe_doctype)
+                df = meta.get_field(frappe_field)
+                # Only ``Data`` and ``Link`` enforce the 140-char cap; long
+                # text types accept arbitrary length and shouldn't be
+                # silently truncated.
+                if df and df.fieldtype in ("Data", "Link", "Select"):
+                    cache[frappe_field] = int(df.length) if df.length else 140
+                else:
+                    cache[frappe_field] = None
+            except Exception:
+                cache[frappe_field] = None
+        max_length = cache[frappe_field]
+        if max_length is None:
+            return value
+        if len(value) <= max_length:
+            return value
+        # Log once per (doctype, field) — repeated truncation is a config
+        # smell that deserves operator attention.
+        flag_key = f"_truncated_{self.frappe_doctype}_{frappe_field}"
+        if not getattr(self, flag_key, False):
+            frappe.log_error(
+                title=(
+                    f"SF value truncated: "
+                    f"{self.frappe_doctype}.{frappe_field}"
+                ),
+                message=(
+                    f"Salesforce value exceeds the {max_length}-char "
+                    f"limit on {self.frappe_doctype}.{frappe_field}; "
+                    f"truncating. Consider widening the field to Small "
+                    f"Text / Long Text in setup/custom_fields.py.\n\n"
+                    f"First offending SF Id: {sf_id or '?'}\n"
+                    f"Length: {len(value)}\n"
+                    f"Sample: {value[:200]!r}..."
+                ),
+            )
+            setattr(self, flag_key, True)
+        return value[:max_length]
 
     # ------------------------------------------------------------------
     # High-water mark

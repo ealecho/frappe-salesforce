@@ -504,7 +504,9 @@ CRM_DEAL_FIELDS: list[dict] = [
     _check("custom_sf_restricted", "Restricted"),
     _data("custom_sf_originates_from", "Originates From"),
     _long_text("custom_sf_notes", "Notes"),
-    _data("custom_sf_file_location", "File Location"),
+    # SF stores long file paths (often deep network shares wrapped in HTML);
+    # 140-char Data overflows. Small Text avoids the cap.
+    _long_text("custom_sf_file_location", "File Location"),
     _int("custom_sf_installment_number", "Installment Number"),
     _date("custom_sf_due_date_of_installment", "Due Date of Installment"),
     _data("custom_sf_package", "Package"),

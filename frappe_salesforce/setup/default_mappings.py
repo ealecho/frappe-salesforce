@@ -1222,7 +1222,11 @@ DEFAULT_MAPPINGS: list[dict] = [
                 "frappe_field": "custom_sf_notes",
                 "transform": "html_strip",
             },
-            {"sf_field": "File_location__c", "frappe_field": "custom_sf_file_location"},
+            {
+                "sf_field": "File_location__c",
+                "frappe_field": "custom_sf_file_location",
+                "transform": "html_strip",
+            },
             {
                 "sf_field": "Installment_number__c",
                 "frappe_field": "custom_sf_installment_number",
