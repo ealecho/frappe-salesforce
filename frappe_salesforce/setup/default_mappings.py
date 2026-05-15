@@ -315,7 +315,11 @@ DEFAULT_MAPPINGS: list[dict] = [
         "rows": [
             {"sf_field": "FirstName", "frappe_field": "first_name"},
             {"sf_field": "LastName", "frappe_field": "last_name"},
-            {"sf_field": "Salutation", "frappe_field": "salutation"},
+            {
+                "sf_field": "Salutation",
+                "frappe_field": "salutation",
+                "transform": "salutation_link",
+            },
             {"sf_field": "Title", "frappe_field": "designation"},
             {"sf_field": "Department", "frappe_field": "department"},
             {"sf_field": "PhotoUrl", "frappe_field": "image"},
@@ -726,7 +730,11 @@ DEFAULT_MAPPINGS: list[dict] = [
         "rows": [
             {"sf_field": "FirstName", "frappe_field": "first_name"},
             {"sf_field": "LastName", "frappe_field": "last_name"},
-            {"sf_field": "Salutation", "frappe_field": "salutation"},
+            {
+                "sf_field": "Salutation",
+                "frappe_field": "salutation",
+                "transform": "salutation_link",
+            },
             {"sf_field": "Company", "frappe_field": "organization"},
             {"sf_field": "Email", "frappe_field": "email"},
             {"sf_field": "Phone", "frappe_field": "phone"},

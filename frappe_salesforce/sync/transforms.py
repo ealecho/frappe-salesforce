@@ -189,6 +189,34 @@ def lost_reason_link(value: Any) -> str | None:
     return _ensure_link("CRM Lost Reason", value, "lost_reason")
 
 
+def salutation_link(value: Any) -> str | None:
+    """Resolve / upsert a Frappe ``Salutation`` record.
+
+    Salesforce stores salutations with a trailing period (``"Mr."``,
+    ``"Mrs."``, ``"Dr."``) but Frappe's standard ``Salutation`` rows are
+    period-less (``"Mr"``, ``"Mrs"``, ``"Dr"``, ``"Ms"``, ``"Miss"``,
+    ``"Madam"``, ``"Mx"``, ``"Prof"``). Without normalisation every
+    Contact / Lead with a populated SF salutation fails to save with
+    ``LinkValidationError: Could not find Salutation: Mr.``.
+
+    Strategy:
+    1. Strip surrounding whitespace and any trailing period(s).
+    2. ``_ensure_link`` will use the existing standard row if present,
+       or auto-create a row for any genuinely novel salutation
+       (``"Rev"``, ``"The Honourable"``) so the parent save succeeds.
+
+    We deliberately don't lowercase / title-case — leaving the casing
+    untouched preserves whatever the operator agreed on for novel
+    values and avoids ``"Mr"`` vs ``"mr"`` duplicate rows.
+    """
+    if value is None or value == "":
+        return None
+    name = str(value).strip().rstrip(".").strip()
+    if not name:
+        return None
+    return _ensure_link("Salutation", name, "salutation")
+
+
 # ----------------------------------------------------------------------
 # Reference lookups (resolve SF Id → Frappe docname)
 # ----------------------------------------------------------------------
@@ -565,6 +593,7 @@ TRANSFORMS = {
     "employee_bucket": employee_bucket,
     "industry_link": industry_link,
     "lost_reason_link": lost_reason_link,
+    "salutation_link": salutation_link,
     "address": address_block,
     "email_table": email_table,
     "phone_table": phone_table,
