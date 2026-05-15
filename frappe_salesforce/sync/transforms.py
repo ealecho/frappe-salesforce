@@ -103,11 +103,13 @@ def _ensure_link(
       pre-date a particular CRM version), return the bare string so callers
       writing into Select fields are unaffected.
     * If a row with that name already exists → return the name.
-    * Otherwise try each ``name_field_candidates`` in turn, then fall back
-      to inserting with ``name=value`` (relies on autoname). All errors are
-      swallowed; on failure the bare string is still returned so the caller's
-      write attempt fails loudly with a LinkValidationError pinpointing
-      exactly which row was missing.
+    * Otherwise determine the autoname target fieldname from DocType meta
+      (``autoname: field:<x>``) and try that first; then fall through to
+      the caller-supplied ``name_field_candidates``; finally fall back to
+      inserting with ``name=value``. All errors are swallowed; on failure
+      the bare string is still returned so the caller's write attempt
+      fails loudly with a ``LinkValidationError`` pinpointing exactly
+      which row was missing.
     """
     if value is None or value == "":
         return None
@@ -120,7 +122,26 @@ def _ensure_link(
         return name
     if frappe.db.exists(doctype, name):
         return name
+
+    # Build the candidate list, autoname-derived field first. Upstream
+    # ``frappe/crm`` periodically renames these primary fields (e.g.
+    # ``CRM Lead Source`` changed from a ``lead_source`` field to
+    # ``source_name``); reading the live meta means we don't need to
+    # ship a code change every time. Falls through to hand-coded
+    # candidates as a defensive guard if the meta lookup fails or the
+    # DocType uses a different ``autoname`` rule.
+    candidates: list[str] = []
+    try:
+        autoname = (frappe.get_meta(doctype).autoname or "").strip()
+        if autoname.lower().startswith("field:"):
+            candidates.append(autoname.split(":", 1)[1].strip())
+    except Exception:
+        pass
     for fld in name_field_candidates:
+        if fld and fld not in candidates:
+            candidates.append(fld)
+
+    for fld in candidates:
         try:
             frappe.get_doc({"doctype": doctype, fld: name}).insert(
                 ignore_permissions=True
@@ -150,8 +171,17 @@ def industry_link(value: Any) -> str | None:
 
 
 def lead_source_link(value: Any) -> str | None:
-    """Resolve / upsert a ``CRM Lead Source`` record by name."""
-    return _ensure_link("CRM Lead Source", value, "lead_source")
+    """Resolve / upsert a ``CRM Lead Source`` record by name.
+
+    Upstream ``frappe/crm`` autonames this DocType via ``field:source_name``
+    — NOT ``lead_source`` as the older v0.1.x candidates assumed. Inserting
+    with the wrong fieldname raises "Source Name is required" and the
+    parent row never gets created, so the subsequent Lead save fails
+    with ``LinkValidationError: Could not find Source: <value>``. Try
+    the correct candidate first, fall back to the legacy guess for
+    forks that may have renamed the field.
+    """
+    return _ensure_link("CRM Lead Source", value, "source_name", "lead_source")
 
 
 def lost_reason_link(value: Any) -> str | None:
