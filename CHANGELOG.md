@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.1.9]
+
+### Fixed
+- `LinkValidationError: Could not find Source: <value>` on every Lead
+  sync whose Salesforce `LeadSource` value didn't already exist as a
+  `CRM Lead Source` row (e.g. `MailChimp`, `Trade Show`). Companion
+  symptom: `SF auto-create CRM Lead Source failed: <value>` with
+  `ValidationError: Source Name is required` in Error Log.
+
+  Root cause: `lead_source_link` passed `lead_source` as the autoname
+  fieldname candidate to `_ensure_link`, but upstream `frappe/crm`
+  autonames `CRM Lead Source` via `field:source_name` (the field
+  named `source_name`, label "Source Name"). The insert therefore
+  built a doc with `lead_source=<value>` but no `source_name`,
+  Frappe's naming logic raised "Source Name is required", `_ensure_link`
+  swallowed the error and returned the bare string anyway, and the
+  parent Lead save then failed link validation because the
+  `CRM Lead Source` row had never been created.
+
+### Changed (transforms.py)
+- `lead_source_link` now passes `source_name` as the primary candidate
+  and keeps `lead_source` as a fallback for any downstream forks that
+  may have renamed the field.
+- `_ensure_link` now reads the target DocType's `autoname` rule from
+  meta and tries the autoname-derived fieldname first, before the
+  hand-coded candidates. Defends against future schema drift on
+  `CRM Industry` / `CRM Lost Reason` / `CRM Lead Source` the same way
+  v0.1.9 fixes the immediate symptom.
+
 ## [0.1.8]
 
 ### Fixed
