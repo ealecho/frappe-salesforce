@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.1.10]
+
+### Fixed
+- `LinkValidationError: Could not find Salutation: Mr.` on every
+  Contact / Lead whose Salesforce `Salutation` value carried a
+  trailing period (`"Mr."`, `"Mrs."`, `"Dr."`, `"Ms."`, `"Prof."`).
+  Frappe's standard `Salutation` rows are period-less (`"Mr"`,
+  `"Mrs"`, `"Dr"`, …) so a raw-string passthrough never resolved.
+
+### Changed (transforms.py)
+- New `salutation_link` transform:
+  - Strips trailing periods and surrounding whitespace
+    (`"Mr." -> "Mr"`, `"Dr.  " -> "Dr"`).
+  - Delegates to `_ensure_link("Salutation", …, "salutation")` so the
+    standard row is used when present and any genuinely novel
+    salutation (`"Rev"`, `"The Honourable"`) is auto-created instead
+    of failing the parent save.
+- Casing left untouched to avoid `"Mr"` vs `"mr"` duplicates.
+
+### Changed (setup/default_mappings.py)
+- Contact + Lead `Salutation` mapping rows now declare
+  `transform: salutation_link` so fresh installs ship with the fix.
+
+### New (patch)
+- `patches/v0_1_0/wire_salutation_link.py`: backfills
+  `transform = "salutation_link"` onto pre-existing
+  `Salesforce Field Mapping` rows for Contact / Lead where the
+  transform was previously empty. Idempotent; never overwrites an
+  operator-set value.
+
 ## [0.1.9]
 
 ### Fixed
