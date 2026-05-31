@@ -41,7 +41,7 @@ SF value. Fields not covered by mappings are untouched.
 
 If `bench migrate` aborts during `sync_fixtures()` with:
 
-```
+```sql
 pymysql.err.OperationalError: (1969, 'Query execution was interrupted (max_statement_time exceeded)')
 ALTER TABLE `tabContact` MODIFY `custom_sf_*` ...
 ```

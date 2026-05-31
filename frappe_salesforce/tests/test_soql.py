@@ -29,7 +29,7 @@ def test_format_soql_datetime_from_space_separated_string():
 
 
 def test_format_soql_datetime_strips_offset():
-    assert format_soql_datetime("2026-04-19T12:30:45+05:30") == "2026-04-19T12:30:45Z"
+    assert format_soql_datetime("2026-04-19T12:30:45+05:30") == "2026-04-19T07:00:45Z"
 
 
 def test_build_incremental_query_includes_modstamp():

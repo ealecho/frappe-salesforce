@@ -148,7 +148,7 @@
   2. `invalidate_cached_token()` wrote an empty string to the
      encrypted `access_token` field, creating an intermediate state
      where a concurrent reader could fetch `""` and assemble a
-     malformed `Authorization: Bearer ` header.
+     malformed `Authorization: Bearer` header.
   3. No cross-process mutex around `_fetch_new_token()`. Two scheduler
      workers waking simultaneously could both POST to the token
      endpoint and race their cached-token writes.

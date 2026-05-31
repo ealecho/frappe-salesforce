@@ -13,16 +13,10 @@ def format_soql_datetime(value: datetime | str) -> str:
     Accepts either a datetime instance or an ISO-like string.
     """
     if isinstance(value, str):
-        # Normalise: strip trailing Z, fractional seconds, offset, then re-add Z.
-        # Also coerce ``frappe.utils.now_datetime()``'s space-separated form
-        # (``"YYYY-MM-DD HH:MM:SS"``) to ISO-8601 with a literal ``T``;
-        # SOQL ``MALFORMED_QUERY``s the space form.
-        value = value.replace("Z", "").split(".")[0]
-        if "+" in value:
-            value = value.split("+")[0]
-        if " " in value and "T" not in value:
-            value = value.replace(" ", "T", 1)
-        return f"{value}Z"
+        value = value.strip()
+        if value.endswith("Z"):
+            value = f"{value[:-1]}+00:00"
+        value = datetime.fromisoformat(value)
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     else:

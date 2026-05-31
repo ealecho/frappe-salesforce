@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import frappe
 from frappe.utils import get_datetime
 
 from .base import BaseSyncer
@@ -25,8 +26,14 @@ class OpportunitySyncer(BaseSyncer):
         if rec.get("IsClosed") and rec.get("CloseDate"):
             try:
                 values["closed_date"] = str(get_datetime(rec["CloseDate"]).date())
-            except Exception:
-                pass
+            except (TypeError, ValueError) as e:
+                frappe.log_error(
+                    title="OpportunitySyncer.enrich_values",
+                    message=(
+                        f"Unparseable CloseDate for SF Opportunity "
+                        f"{rec.get('Id') or '?'}: {rec.get('CloseDate')!r}\n{e}"
+                    ),
+                )
 
         # Fallback contact resolution: if ContactId was empty, try the
         # NPSP primary-contact link.

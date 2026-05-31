@@ -141,16 +141,21 @@ class SalesforceAuth:
     def _cached_token_valid(self) -> bool:
         """Determine whether the cached token can be safely reused.
 
-        The token IS the source of truth: modern Salesforce session tokens
-        are JWTs that embed their own ``exp`` claim. We decode that claim
-        and compare against UTC wall-clock time. This is robust against
-        TZ confusion (``token_expires_at`` is naive local in the DB) and
-        against desync between ``access_token`` and ``token_expires_at``
-        (e.g. one write succeeds, the other doesn't).
+        A null ``token_expires_at`` is an explicit invalidation signal.
+        Otherwise, modern Salesforce session tokens are JWTs that embed
+        their own ``exp`` claim. We decode that claim and compare against
+        UTC wall-clock time. This is robust against TZ confusion
+        (``token_expires_at`` is naive local in the DB).
 
         If the token isn't a JWT (older orgs, opaque session IDs) we fall
         back to the stored ``token_expires_at`` interpreted as UTC.
         """
+        expires_at = frappe.db.get_single_value(
+            self.SETTINGS_DOCTYPE, "token_expires_at"
+        )
+        if not expires_at:
+            return False
+
         token = get_decrypted_password(
             self.SETTINGS_DOCTYPE,
             self.SETTINGS_DOCTYPE,
@@ -167,11 +172,6 @@ class SalesforceAuth:
             return (jwt_exp - now_utc).total_seconds() > EXPIRY_SKEW_SECONDS
 
         # Fallback: opaque session ID — trust stored expiry, treated as UTC.
-        expires_at = frappe.db.get_single_value(
-            self.SETTINGS_DOCTYPE, "token_expires_at"
-        )
-        if not expires_at:
-            return False
         # Stored value is naive; we now write UTC into this field, but
         # older rows may be naive-local. We accept the small risk of a
         # one-off bad cache hit during the transition — the post-401

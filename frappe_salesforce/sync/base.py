@@ -96,6 +96,7 @@ class BaseSyncer:
                             # the next syncer rather than aborting the
                             # whole tick.
                             raise
+                        iterator = self.client.query(soql)
                         continue
                     raise
 
