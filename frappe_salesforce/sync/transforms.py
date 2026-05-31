@@ -18,10 +18,22 @@ from __future__ import annotations
 
 import html
 import re
+from datetime import datetime
 from typing import Any
 
-import frappe
-from frappe.utils import get_datetime
+try:
+    import frappe
+    from frappe.utils import get_datetime
+except ModuleNotFoundError:  # pragma: no cover - supports no-site static tests
+    frappe = None
+
+    def get_datetime(value):
+        if isinstance(value, datetime):
+            return value
+        text = str(value)
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        return datetime.fromisoformat(text)
 
 _TAG_RE = re.compile(r"<[^>]+>")
 

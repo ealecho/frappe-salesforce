@@ -21,7 +21,22 @@ a ``dict[str, Any]`` of ``{sf_field: value}``. See ``sync.transforms``.
 
 from __future__ import annotations
 
-import frappe
+from typing import Any
+
+try:
+    import frappe
+except ModuleNotFoundError:  # pragma: no cover - supports no-site static tests
+    frappe = None
+
+REQUIRED_DEFAULT_MAPPING_ROWS: dict[str, tuple[dict[str, str], ...]] = {
+    "Task": ({"sf_field": "Subject", "frappe_field": "title"},),
+    "Event": ({"sf_field": "Subject", "frappe_field": "title"},),
+}
+
+
+class SalesforceMappingSetupError(Exception):
+    """Raised when required Salesforce field mappings are missing."""
+
 
 DEFAULT_MAPPINGS: list[dict] = [
     # ------------------------------------------------------------------
@@ -1417,6 +1432,7 @@ DEFAULT_MAPPINGS: list[dict] = [
 
 
 def seed_default_field_mappings() -> None:
+    _require_frappe()
     for mapping in DEFAULT_MAPPINGS:
         if frappe.db.exists(
             "Salesforce Field Mapping",
@@ -1433,6 +1449,105 @@ def seed_default_field_mappings() -> None:
             }
         )
         doc.insert(ignore_permissions=True)
+
+
+def ensure_default_field_mappings(validate: bool = True) -> None:
+    """Create/backfill default mappings and optionally validate sync readiness.
+
+    This is intentionally additive: existing mapping rows are left untouched,
+    and missing default rows are appended. Admin customisations therefore
+    survive, but an old/broken install with an empty mapping table can heal
+    itself before sync starts.
+    """
+    _require_frappe()
+    for mapping in DEFAULT_MAPPINGS:
+        _ensure_default_mapping(mapping)
+    if validate:
+        validate_required_field_mappings()
+
+
+def validate_required_field_mappings() -> None:
+    """Fail clearly if required mappings are not enabled and complete."""
+    _require_frappe()
+    required_objects = _required_salesforce_objects()
+    missing: list[str] = []
+    for sf_object in required_objects:
+        mapping_name = frappe.db.get_value(
+            "Salesforce Field Mapping",
+            {"salesforce_object": sf_object, "enabled": 1},
+            "name",
+        )
+        if not mapping_name:
+            missing.append(f"{sf_object}: enabled Salesforce Field Mapping")
+            continue
+        doc = frappe.get_doc("Salesforce Field Mapping", mapping_name)
+        rows = {_row_key(row) for row in doc.field_mappings or []}
+        for required in REQUIRED_DEFAULT_MAPPING_ROWS.get(sf_object, ()):
+            if _row_key(required) not in rows:
+                missing.append(
+                    f"{sf_object}: {required['sf_field']} -> "
+                    f"{required['frappe_field']}"
+                )
+
+    if missing:
+        raise SalesforceMappingSetupError(
+            "Salesforce Field Mapping setup incomplete. Missing: "
+            + "; ".join(missing)
+        )
+
+
+def _ensure_default_mapping(mapping: dict[str, Any]) -> None:
+    sf_object = mapping["salesforce_object"]
+    existing_name = frappe.db.get_value(
+        "Salesforce Field Mapping",
+        {"salesforce_object": sf_object},
+        "name",
+    )
+    if not existing_name:
+        doc = frappe.get_doc(
+            {
+                "doctype": "Salesforce Field Mapping",
+                "salesforce_object": sf_object,
+                "frappe_doctype": mapping["frappe_doctype"],
+                "enabled": 1,
+                "field_mappings": [_serialise_row(row) for row in mapping["rows"]],
+            }
+        )
+        doc.insert(ignore_permissions=True)
+        return
+
+    doc = frappe.get_doc("Salesforce Field Mapping", existing_name)
+    existing_rows = {_row_key(row) for row in doc.field_mappings or []}
+    added = 0
+    for row in mapping["rows"]:
+        serialised = _serialise_row(row)
+        key = _row_key(serialised)
+        if key in existing_rows:
+            continue
+        doc.append("field_mappings", serialised)
+        existing_rows.add(key)
+        added += 1
+    if added:
+        doc.save(ignore_permissions=True)
+
+
+def _required_salesforce_objects() -> set[str]:
+    """Return SF objects that must have enabled mappings before sync."""
+    return set(REQUIRED_DEFAULT_MAPPING_ROWS)
+
+
+def _row_key(row) -> tuple[str, str]:
+    sf_field = _row_value(row, "sf_field")
+    sf_fields = _row_value(row, "sf_fields")
+    frappe_field = _row_value(row, "frappe_field")
+    sf_input = sf_field or sf_fields
+    return (str(sf_input).strip().lower(), str(frappe_field).strip().lower())
+
+
+def _row_value(row, key: str) -> Any:
+    if isinstance(row, dict):
+        return row.get(key) or ""
+    return getattr(row, key, "") or ""
 
 
 def _serialise_row(row: dict) -> dict:
@@ -1452,3 +1567,8 @@ def _serialise_row(row: dict) -> dict:
         "frappe_field": row["frappe_field"],
         "transform": row.get("transform") or "none",
     }
+
+
+def _require_frappe() -> None:
+    if frappe is None:
+        raise RuntimeError("Frappe is required to manage Salesforce Field Mapping")

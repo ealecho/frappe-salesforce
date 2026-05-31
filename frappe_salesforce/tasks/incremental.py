@@ -11,6 +11,10 @@ from frappe_salesforce.salesforce.exceptions import (
     SalesforceError,
     SalesforceRateLimitError,
 )
+from frappe_salesforce.setup.default_mappings import (
+    SalesforceMappingSetupError,
+    ensure_default_field_mappings,
+)
 from frappe_salesforce.sync.registry import SYNCERS
 
 
@@ -19,6 +23,15 @@ class IncrementalSyncRunner:
 
     def run(self) -> str:
         log = self._create_log()
+        try:
+            ensure_default_field_mappings()
+        except SalesforceMappingSetupError as e:
+            log.status = "Failed"
+            log.error_summary = str(e)[:500]
+            log.end_time = now_datetime()
+            log.save(ignore_permissions=True)
+            frappe.db.commit()
+            return log.name
         try:
             client = SalesforceClient()
         except SalesforceBudgetExceeded as e:
