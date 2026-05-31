@@ -6,11 +6,69 @@ One-way Salesforce → Frappe CRM integration using SOQL over the Salesforce RES
 
 - OAuth 2.0 JWT Bearer authentication (server-to-server)
 - Incremental sync every 15 minutes via `SystemModstamp`
-- Configurable field mappings per Salesforce object
+- Configurable field mappings per Salesforce object (data, not code)
+- Multi-input mappings for compound fields: addresses, multi-channel emails / phones
 - Syncs Users (for owner mapping), Accounts, Contacts, Leads, Opportunities, Tasks, Events
 - Deletion sync (daily) via Salesforce `getDeleted` endpoint
 - Sync Log with per-object stats and SOQL audit
 - Workspace with dashboard charts and KPI number cards
+- Full-backfill ("Reset HWMs to Epoch") and date-windowed backfill from the Salesforce Settings UI
+
+## Post-deploy data refresh
+
+After installing or upgrading this app you should refresh existing data from
+Salesforce so prior records pick up new mappings and bug fixes.
+
+1. `bench --site <site> migrate` — runs the v0.1.0 patches: creates the
+   `custom_sf_*` fields on existing sites, extends default mappings (additively,
+   never clobbering user customisations), and rewrites known-buggy rows from
+   v0.0.x (e.g. `Opportunity.Amount → annual_revenue` becomes
+   `Amount → deal_value`).
+2. Open **Salesforce Settings** → **Danger Zone** → **Reset HWMs to Epoch
+   (Full Backfill)** → confirm.
+3. Wait for the next 15-minute scheduler tick or click **Sync Now**. Records
+   are upserted by `custom_salesforce_id`; existing Frappe rows are updated
+   in place (no duplicates).
+4. Monitor progress via **Salesforce Sync Log**. The per-day API budget
+   (default 50,000) caps daily burn; large orgs may take several days to
+   fully replay.
+
+The reset is non-destructive in Frappe terms but is one-way — any locally
+edited fields that also exist in a SF mapping will be overwritten by the
+SF value. Fields not covered by mappings are untouched.
+
+### Migration timeout on large Contact tables
+
+If `bench migrate` aborts during `sync_fixtures()` with:
+
+```sql
+pymysql.err.OperationalError: (1969, 'Query execution was interrupted (max_statement_time exceeded)')
+ALTER TABLE `tabContact` MODIFY `custom_sf_*` ...
+```
+
+…another query was holding a metadata lock on `tabContact` long enough
+that MariaDB's `max_statement_time` (default 3600s) expired before the
+ALTER could acquire the lock. The migration partially succeeded — patches
+ran, but fixture import was interrupted.
+
+To recover:
+
+1. Find and kill the blocking query:
+   ```sql
+   SHOW FULL PROCESSLIST;
+   -- look for the query holding tabContact and `KILL <id>;` it
+   ```
+2. Re-run `bench --site <site> migrate`. Patches that already completed
+   are recorded in `tabPatch Log` and skipped; only the remaining work
+   (fixture import) reruns.
+3. If the ALTER itself is genuinely slow on a large table, run it
+   manually during a maintenance window (`pt-online-schema-change` or
+   raise `max_statement_time` for that session).
+
+This app does **not** ship `custom_sf_*` fields as fixtures — they're
+created code-side via `setup/custom_fields.py:ensure_all_custom_fields()`.
+The fixture filter in `hooks.py` is intentionally narrow
+(`custom_salesforce_id` only) so the fixture-import schema-sync is fast.
 
 ## Scope (v1)
 

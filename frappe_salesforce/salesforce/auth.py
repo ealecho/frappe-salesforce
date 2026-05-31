@@ -12,6 +12,8 @@ Docs:
 
 from __future__ import annotations
 
+import base64
+import datetime
 import json
 import time
 
@@ -20,6 +22,7 @@ import jwt
 import requests
 from frappe.utils import get_datetime, now_datetime
 from frappe.utils.password import get_decrypted_password
+from frappe.utils.synchronization import filelock
 
 from .exceptions import SalesforceAuthError, SalesforceConfigurationError
 
@@ -30,6 +33,14 @@ EXPIRY_SKEW_SECONDS = 60
 DEFAULT_TOKEN_LIFETIME = 3600
 # Max JWT lifetime accepted by Salesforce is 3 minutes; we use slightly less.
 JWT_LIFETIME_SECONDS = 180
+# A valid Salesforce session token is ~100+ chars; anything materially
+# shorter is almost certainly a leftover empty string / corrupted blob.
+MIN_PLAUSIBLE_TOKEN_LEN = 20
+# Cross-process refresh mutex name (resolves to a file lock under the
+# bench's lock dir). Prevents stampedes when multiple scheduler workers
+# all wake up post-expiry.
+TOKEN_REFRESH_LOCK = "sf_token_refresh"
+TOKEN_REFRESH_LOCK_TIMEOUT = 30
 
 
 class SalesforceAuth:
@@ -64,14 +75,35 @@ class SalesforceAuth:
                 "access_token",
                 raise_exception=False,
             )
-            if token and self.settings.instance_url:
-                return token, self.settings.instance_url
+            instance_url = frappe.db.get_single_value(
+                self.SETTINGS_DOCTYPE, "instance_url"
+            )
+            # Defensive shape check: an empty / truncated token would
+            # produce an ``INVALID_AUTH_HEADER`` 401 on the next call.
+            # If the cached value is implausible, force a refresh.
+            if (
+                token
+                and len(token.strip()) >= MIN_PLAUSIBLE_TOKEN_LEN
+                and instance_url
+            ):
+                return token, instance_url
         return self._fetch_new_token()
 
     def invalidate_cached_token(self) -> None:
-        """Clear cached token so next call refreshes."""
-        frappe.db.set_single_value(self.SETTINGS_DOCTYPE, "access_token", "")
+        """Clear cached token so next call refreshes.
+
+        We null out ``token_expires_at`` only — writing an empty string to
+        the encrypted ``access_token`` field creates an intermediate state
+        where a concurrent reader can fetch ``""`` and assemble a malformed
+        ``Authorization: Bearer `` header. The expiry-null is sufficient
+        to trigger a refresh on the next ``get_access_token`` call.
+
+        Also drops the Frappe Redis password cache so the next read of
+        ``access_token`` doesn't return a stale prior value.
+        """
         frappe.db.set_single_value(self.SETTINGS_DOCTYPE, "token_expires_at", None)
+        frappe.db.commit()
+        _invalidate_password_cache(self.SETTINGS_DOCTYPE, "access_token")
 
     def build_claim(self, issued_at: int | None = None) -> dict:
         """Build the JWT claim set. Exposed for diagnostics."""
@@ -107,12 +139,48 @@ class SalesforceAuth:
         return f"{self._audience()}{TOKEN_ENDPOINT}"
 
     def _cached_token_valid(self) -> bool:
-        expires_at = self.settings.token_expires_at
+        """Determine whether the cached token can be safely reused.
+
+        A null ``token_expires_at`` is an explicit invalidation signal.
+        Otherwise, modern Salesforce session tokens are JWTs that embed
+        their own ``exp`` claim. We decode that claim and compare against
+        UTC wall-clock time. This is robust against TZ confusion
+        (``token_expires_at`` is naive local in the DB).
+
+        If the token isn't a JWT (older orgs, opaque session IDs) we fall
+        back to the stored ``token_expires_at`` interpreted as UTC.
+        """
+        expires_at = frappe.db.get_single_value(
+            self.SETTINGS_DOCTYPE, "token_expires_at"
+        )
         if not expires_at:
             return False
+
+        token = get_decrypted_password(
+            self.SETTINGS_DOCTYPE,
+            self.SETTINGS_DOCTYPE,
+            "access_token",
+            raise_exception=False,
+        )
+        if not token or len(token.strip()) < MIN_PLAUSIBLE_TOKEN_LEN:
+            return False
+
+        # Primary path: trust the JWT's own exp claim.
+        jwt_exp = _decode_jwt_exp(token)
+        if jwt_exp is not None:
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            return (jwt_exp - now_utc).total_seconds() > EXPIRY_SKEW_SECONDS
+
+        # Fallback: opaque session ID — trust stored expiry, treated as UTC.
+        # Stored value is naive; we now write UTC into this field, but
+        # older rows may be naive-local. We accept the small risk of a
+        # one-off bad cache hit during the transition — the post-401
+        # refresh path will heal it. Going forward all writes are UTC.
         expires_dt = get_datetime(expires_at)
-        now = get_datetime(now_datetime())
-        return (expires_dt - now).total_seconds() > EXPIRY_SKEW_SECONDS
+        if expires_dt.tzinfo is None:
+            expires_dt = expires_dt.replace(tzinfo=datetime.timezone.utc)
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        return (expires_dt - now_utc).total_seconds() > EXPIRY_SKEW_SECONDS
 
     def _load_private_key(self) -> str:
         raw = get_decrypted_password(
@@ -141,6 +209,36 @@ class SalesforceAuth:
         return key
 
     def _fetch_new_token(self) -> tuple[str, str]:
+        # Serialize concurrent refreshes across workers. Without this,
+        # two scheduler ticks waking simultaneously can both POST to
+        # ``/services/oauth2/token`` and clobber each other's cached
+        # token writes (the loser's response races the winner's commit,
+        # producing a brief window where the persisted token is from
+        # one request but the in-memory token returned by the other
+        # caller comes from a different request — the asymmetry shows
+        # up as ``INVALID_AUTH_HEADER`` 401s on the next REST call).
+        with filelock(TOKEN_REFRESH_LOCK, timeout=TOKEN_REFRESH_LOCK_TIMEOUT):
+            # Double-checked locking: another worker may have refreshed
+            # while we were blocked on the mutex. If so, reuse its result.
+            if self._cached_token_valid():
+                token = get_decrypted_password(
+                    self.SETTINGS_DOCTYPE,
+                    self.SETTINGS_DOCTYPE,
+                    "access_token",
+                    raise_exception=False,
+                )
+                instance_url = frappe.db.get_single_value(
+                    self.SETTINGS_DOCTYPE, "instance_url"
+                )
+                if (
+                    token
+                    and len(token.strip()) >= MIN_PLAUSIBLE_TOKEN_LEN
+                    and instance_url
+                ):
+                    return token, instance_url
+            return self._do_fetch_new_token()
+
+    def _do_fetch_new_token(self) -> tuple[str, str]:
         private_key = self._load_private_key()
         claim = self.build_claim()
 
@@ -174,9 +272,25 @@ class SalesforceAuth:
         instance_url = data.get("instance_url") or self.settings.instance_url
         if not access_token:
             raise SalesforceAuthError(f"Token response missing access_token: {data}")
+        # Defensive sanitisation: even though SF returns clean values, any
+        # whitespace/control char that survives into the persisted token
+        # would later poison the Authorization header.
+        access_token = access_token.strip()
 
-        expires_in = int(data.get("expires_in") or DEFAULT_TOKEN_LIFETIME)
-        expires_at = frappe.utils.add_to_date(now_datetime(), seconds=expires_in)
+        # Prefer the JWT's embedded exp claim if present (modern SF orgs);
+        # it is the authoritative expiry. Fall back to expires_in (legacy
+        # opaque session IDs).
+        jwt_exp = _decode_jwt_exp(access_token)
+        if jwt_exp is not None:
+            # Store as naive UTC (Frappe Datetime fields are naive). We
+            # always interpret this field as UTC on read.
+            expires_at = jwt_exp.replace(tzinfo=None)
+        else:
+            expires_in = int(data.get("expires_in") or DEFAULT_TOKEN_LIFETIME)
+            expires_at = (
+                datetime.datetime.now(datetime.timezone.utc)
+                + datetime.timedelta(seconds=expires_in)
+            ).replace(tzinfo=None)
 
         # Persist for future calls.
         frappe.db.set_single_value(self.SETTINGS_DOCTYPE, "access_token", access_token)
@@ -185,6 +299,17 @@ class SalesforceAuth:
             self.SETTINGS_DOCTYPE, "token_expires_at", expires_at
         )
         frappe.db.commit()
+
+        # Invalidate Frappe's password cache so subsequent
+        # ``get_decrypted_password`` calls see the value we just wrote
+        # rather than a stale prior token. Frappe caches decrypted
+        # password values in Redis keyed by (doctype, name, fieldname);
+        # ``set_single_value`` updates ``__Auth`` but does NOT
+        # invalidate this cache, so a reader in the same process — or
+        # any other worker — can keep returning the previous token
+        # until cache expiry. Symptom: write-verify lengths match
+        # but values differ (both are valid SF tokens of similar length).
+        _invalidate_password_cache(self.SETTINGS_DOCTYPE, "access_token")
 
         return access_token, instance_url
 
@@ -257,3 +382,79 @@ def _invalid_grant_hint(body: dict) -> str:
             "Profile or a Permission Set to the app."
         )
     return ""
+
+
+def _invalidate_password_cache(doctype: str, fieldname: str) -> None:
+    """Evict every cache layer that may shadow a freshly-written password.
+
+    ``frappe.db.set_single_value`` on a Password field updates ``__Auth``
+    but does NOT invalidate any of the caches that
+    ``frappe.utils.password.get_decrypted_password`` consults:
+
+    1. In-process request cache (``frappe.local.request_cache``) —
+       populated on the first ``get_decrypted_password`` call in a
+       request, served for the rest of that request. This is the most
+       common cause of "write-verify lengths match but values differ":
+       the readback inside the same request as the write returns the
+       value that was cached *before* the write.
+    2. Redis ``__password`` hash — shared across workers; can shadow
+       a write performed by another worker until TTL.
+
+    We evict all known cache shapes, swallowing errors (best-effort).
+    """
+    # 1. In-process request cache.
+    try:
+        rc = getattr(frappe.local, "request_cache", None)
+        if rc is not None:
+            # request_cache is a dict-of-dicts keyed by function then args.
+            # Drop the whole get_decrypted_password bucket — cheaper than
+            # guessing the args key shape.
+            rc.pop("get_decrypted_password", None)
+    except Exception:
+        pass
+
+    # 2. Redis shared cache. Key shape varies across Frappe versions;
+    # try every known variant.
+    candidates = [
+        f"{doctype}.{doctype}.{fieldname}",
+        f"{doctype}|{doctype}|{fieldname}",
+        f"{doctype}{doctype}{fieldname}",
+    ]
+    try:
+        cache = frappe.cache()
+    except Exception:
+        return
+    for hash_name in ("__password", "passwords", "frappe.utils.password"):
+        for key in candidates:
+            try:
+                cache.hdel(hash_name, key)
+            except Exception:
+                pass
+
+
+def _decode_jwt_exp(token: str) -> datetime.datetime | None:
+    """Return the ``exp`` claim of ``token`` as a tz-aware UTC datetime.
+
+    Returns ``None`` if the token isn't a parseable JWT or has no ``exp``
+    claim. Used as the source of truth for token expiry: the JWT is
+    self-describing, so we don't have to trust separately-stored metadata
+    (``token_expires_at``) that can desync from ``access_token``.
+
+    Signature is NOT verified — we trust SF to have given us its own
+    signed token, and we're only reading expiry. The signature would
+    require SF's JWKS which we don't have.
+    """
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        payload_b64 = parts[1]
+        # Restore base64 padding stripped by JWT encoding.
+        padded = payload_b64 + "=" * ((4 - len(payload_b64) % 4) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded))
+        exp = payload.get("exp")
+        if not isinstance(exp, (int, float)):
+            return None
+        return datetime.datetime.fromtimestamp(int(exp), datetime.timezone.utc)
+    except Exception:
+        return None

@@ -22,6 +22,16 @@ def test_format_soql_datetime_from_string():
     assert format_soql_datetime("2026-04-19T12:30:45.123Z") == "2026-04-19T12:30:45Z"
 
 
+def test_format_soql_datetime_from_space_separated_string():
+    """Regression: ``frappe.utils.now_datetime()`` returns space-separated
+    strings; SOQL rejects them with MALFORMED_QUERY."""
+    assert format_soql_datetime("2026-04-19 12:30:45") == "2026-04-19T12:30:45Z"
+
+
+def test_format_soql_datetime_strips_offset():
+    assert format_soql_datetime("2026-04-19T12:30:45+05:30") == "2026-04-19T07:00:45Z"
+
+
 def test_build_incremental_query_includes_modstamp():
     q = build_incremental_query(
         "Account",
@@ -40,6 +50,20 @@ def test_build_incremental_query_dedupes_fields():
         ["Id", "Name", "name"],
         datetime(2026, 4, 19, tzinfo=timezone.utc),
     )
-    # Only one "Id" and one "Name" (case-insensitive dedupe).
-    assert q.count(" Id,") + q.count("SELECT Id,") == 1
-    assert q.lower().count(" name,") + q.lower().count("select name,") <= 1
+    # Extract the field list between SELECT and FROM and verify dedupe.
+    select_part = q.split("SELECT ", 1)[1].split(" FROM", 1)[0]
+    fields = [f.strip() for f in select_part.split(",")]
+    lowered = [f.lower() for f in fields]
+    assert lowered.count("id") == 1
+    assert lowered.count("name") == 1
+    assert "systemmodstamp" in lowered
+
+
+def test_build_incremental_query_with_extra_where():
+    q = build_incremental_query(
+        "Lead",
+        ["Email"],
+        datetime(2026, 4, 19, tzinfo=timezone.utc),
+        extra_where="IsConverted = false",
+    )
+    assert "(IsConverted = false)" in q

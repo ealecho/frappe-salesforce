@@ -8,13 +8,15 @@
   "sf_field",
   "frappe_field",
   "transform",
+  "sf_fields",
   "required",
   "default_value"
  ],
  "fields": [
-  {"fieldname": "sf_field", "fieldtype": "Data", "label": "Salesforce Field", "in_list_view": 1, "reqd": 1, "columns": 2},
+  {"fieldname": "sf_field", "fieldtype": "Data", "label": "Salesforce Field", "in_list_view": 1, "columns": 2, "description": "Single SF field. Leave blank when using sf_fields (multi-input)."},
   {"fieldname": "frappe_field", "fieldtype": "Data", "label": "Frappe Field", "in_list_view": 1, "reqd": 1, "columns": 2},
-  {"fieldname": "transform", "fieldtype": "Select", "label": "Transform", "options": "none\nboolean\ndate\ndatetime\nhtml_strip\nuser_lookup\naccount_lookup\ndeal_stage\ndeal_lost_reason\nlead_status\ntask_status\ntask_priority", "default": "none", "in_list_view": 1, "columns": 2},
+   {"fieldname": "transform", "fieldtype": "Select", "label": "Transform", "options": "none\nboolean\ndate\ndatetime\nhtml_strip\nuser_lookup\naccount_lookup\ncontact_lookup\npolymorphic_lookup\ncampaign_lookup\ndeal_stage\ndeal_stage_link\ndeal_lost_reason\ndeal_lost_reason_link\nlead_status\nlead_status_link\nlead_source\ntask_status\ntask_status_link\ntask_priority\ntask_priority_link\nemployee_bucket\nindustry_link\nlost_reason_link\nemail_table\nphone_table\naddress", "default": "none", "in_list_view": 1, "columns": 2},
+  {"fieldname": "sf_fields", "fieldtype": "Long Text", "label": "Salesforce Fields (multi-input)", "description": "Newline-separated list of SF fields fed as a dict to multi-input transforms (address, email_table, phone_table). Leave blank for scalar transforms."},
   {"fieldname": "required", "fieldtype": "Check", "label": "Required", "default": "0"},
   {"fieldname": "default_value", "fieldtype": "Data", "label": "Default Value", "in_list_view": 1, "columns": 2}
  ],

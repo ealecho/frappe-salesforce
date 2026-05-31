@@ -59,6 +59,37 @@ def backfill_from_date(since: str):
 
 
 @frappe.whitelist()
+def reset_all_high_water_marks():
+    """Reset every per-syncer HWM to epoch (1970-01-01) for a full backfill.
+
+    Use after deploying mapping fixes that require existing records to be
+    re-fetched from Salesforce. The next scheduler tick (or manual
+    ``Sync Now``) will start replaying records from the beginning of time;
+    the per-day API budget guards against quota exhaustion.
+
+    Returns the list of fields that were reset.
+    """
+    frappe.only_for("System Manager")
+    from frappe_salesforce.setup.install import HWM_FIELDS
+
+    epoch = "1970-01-01 00:00:00"
+    settings = frappe.get_single("Salesforce Settings")
+    for field in HWM_FIELDS:
+        settings.set(field, epoch)
+    settings.save(ignore_permissions=True)
+    frappe.db.commit()
+    frappe.log_error(
+        title="Salesforce HWMs reset to epoch",
+        message=(
+            "Operator triggered a full backfill via "
+            "frappe_salesforce.api.sync.reset_all_high_water_marks. "
+            f"Fields reset: {', '.join(HWM_FIELDS)}."
+        ),
+    )
+    return {"ok": True, "reset_to": epoch, "fields": HWM_FIELDS}
+
+
+@frappe.whitelist()
 def get_api_usage():
     """Return last-observed Salesforce API usage + today's app-level count."""
     frappe.only_for("System Manager")

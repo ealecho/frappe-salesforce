@@ -26,6 +26,24 @@ scheduler_events = {
 }
 
 # Fixtures
+#
+# IMPORTANT: ``custom_sf_*`` fields are NOT exported as fixtures. They are
+# created by ``setup/install.py:_ensure_custom_fields()`` on fresh installs
+# and by ``patches/v0_1_0/add_custom_fields.py`` on upgrades — both via
+# ``create_custom_fields(..., ignore_validate=True)`` which is fast.
+#
+# Fixture import is *not* fast — it calls ``frappe.db.updatedb(dt)`` after
+# each Custom Field insert, triggering a per-field ``ALTER TABLE`` on the
+# parent doctype. With ~100 ``custom_sf_*`` fields on Contact (8000+ rows)
+# and ~115 on CRM Deal, every migrate would queue 200+ ALTERs that hold
+# table-metadata locks for 30-60+ minutes and frequently exceed
+# MariaDB's ``max_statement_time``. So we deliberately don't ship them
+# as fixtures; the patch handles the create/update path explicitly.
+#
+# We still ship ``custom_salesforce_id`` as a fixture because (a) it's the
+# upsert key, (b) it carries non-default flags (``unique``, ``search_index``)
+# that must round-trip cleanly, and (c) it's a single field per doctype so
+# ALTER cost is negligible.
 fixtures = [
     {
         "dt": "Custom Field",
