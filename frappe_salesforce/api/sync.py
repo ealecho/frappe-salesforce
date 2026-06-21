@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import frappe
+from frappe.utils import now_datetime
 
 
 @frappe.whitelist()
@@ -87,6 +90,128 @@ def reset_all_high_water_marks():
         ),
     )
     return {"ok": True, "reset_to": epoch, "fields": HWM_FIELDS}
+
+
+@frappe.whitelist()
+def backfill_deal_child_tables(account_name: str | None = None, limit: int | None = None):
+    """Repopulate the Income Year Breakdown + Payment Schedule grids.
+
+    Walks existing ``Salesforce Record Link`` rows for Opportunities and,
+    for each linked CRM Deal, re-queries the related ``Income_year__c`` and
+    ``npe01__OppPayment__c`` records and rebuilds the two child tables.
+
+    This is the one-off / on-demand counterpart to the automatic refresh
+    that ``OpportunitySyncer.after_upsert`` performs during incremental
+    sync — useful to seed existing deals or to reconcile after a child
+    record changed in Salesforce without bumping the parent Opportunity.
+
+    Args:
+        account_name: Optional CRM Organization name to restrict the
+            backfill to a single account's deals (e.g. ``"Four Acre Trust"``
+            to test on John Bothamley's grants first).
+        limit: Optional cap on the number of deals processed.
+
+    Returns a per-run summary; details (failures) are written to the Error
+    Log. Each deal costs ~2 Salesforce API calls, governed by the same
+    per-tick / per-day budgets as a normal sync.
+    """
+    frappe.only_for("System Manager")
+
+    from frappe_salesforce.salesforce.client import SalesforceClient
+    from frappe_salesforce.sync.opportunities import (
+        build_income_year_row,
+        build_payment_row,
+        INCOME_YEAR_FIELDS,
+        PAYMENT_FIELDS,
+    )
+
+    if limit is not None:
+        limit = int(limit)
+
+    # The grant child tables are owned by a separate app; on a bench that
+    # lacks them there's nowhere to write, so bail before spending any
+    # Salesforce API calls.
+    meta = frappe.get_meta("CRM Deal")
+    has_income_years = bool(meta.get_field("custom_income_years"))
+    has_payments = bool(meta.get_field("custom_payment_schedule"))
+    if not (has_income_years or has_payments):
+        return {
+            "ok": False,
+            "reason": (
+                "CRM Deal has neither custom_income_years nor "
+                "custom_payment_schedule; the grant child tables are not "
+                "installed on this bench."
+            ),
+        }
+
+    filters: dict[str, Any] = {
+        "salesforce_object": "Opportunity",
+        "frappe_doctype": "CRM Deal",
+    }
+    links = frappe.get_all(
+        "Salesforce Record Link",
+        filters=filters,
+        fields=["salesforce_id", "frappe_name"],
+    )
+
+    client = SalesforceClient()
+    today = now_datetime().date()
+    processed = skipped = failed = 0
+
+    for link in links:
+        deal_name = link.get("frappe_name")
+        sf_id = link.get("salesforce_id")
+        if not deal_name or not sf_id:
+            skipped += 1
+            continue
+        if not frappe.db.exists("CRM Deal", deal_name):
+            skipped += 1
+            continue
+        if account_name:
+            org = frappe.db.get_value("CRM Deal", deal_name, "organization")
+            if org != account_name:
+                skipped += 1
+                continue
+        try:
+            doc = frappe.get_doc("CRM Deal", deal_name)
+            if has_income_years:
+                iy_soql = (
+                    f"SELECT {', '.join(INCOME_YEAR_FIELDS)} FROM Income_year__c "
+                    f"WHERE Grant_Or_Donation__c = '{sf_id}'"
+                )
+                doc.set(
+                    "custom_income_years",
+                    [build_income_year_row(r) for r in client.query(iy_soql)],
+                )
+            if has_payments:
+                pay_soql = (
+                    f"SELECT {', '.join(PAYMENT_FIELDS)} FROM npe01__OppPayment__c "
+                    f"WHERE npe01__Opportunity__c = '{sf_id}'"
+                )
+                doc.set(
+                    "custom_payment_schedule",
+                    [build_payment_row(r, today) for r in client.query(pay_soql)],
+                )
+            doc.save(ignore_permissions=True)
+            frappe.db.commit()
+            processed += 1
+        except Exception as e:
+            failed += 1
+            frappe.db.rollback()
+            frappe.log_error(
+                title=f"SF backfill child tables: deal {deal_name}",
+                message=frappe.get_traceback() or str(e),
+            )
+        if limit and processed >= limit:
+            break
+
+    return {
+        "ok": True,
+        "deals_processed": processed,
+        "skipped": skipped,
+        "failed": failed,
+        "account_name": account_name,
+    }
 
 
 @frappe.whitelist()
