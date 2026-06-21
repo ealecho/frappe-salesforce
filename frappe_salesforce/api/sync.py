@@ -128,6 +128,22 @@ def backfill_deal_child_tables(account_name: str | None = None, limit: int | Non
     if limit is not None:
         limit = int(limit)
 
+    # The grant child tables are owned by a separate app; on a bench that
+    # lacks them there's nowhere to write, so bail before spending any
+    # Salesforce API calls.
+    meta = frappe.get_meta("CRM Deal")
+    has_income_years = bool(meta.get_field("custom_income_years"))
+    has_payments = bool(meta.get_field("custom_payment_schedule"))
+    if not (has_income_years or has_payments):
+        return {
+            "ok": False,
+            "reason": (
+                "CRM Deal has neither custom_income_years nor "
+                "custom_payment_schedule; the grant child tables are not "
+                "installed on this bench."
+            ),
+        }
+
     filters: dict[str, Any] = {
         "salesforce_object": "Opportunity",
         "frappe_doctype": "CRM Deal",
@@ -158,22 +174,24 @@ def backfill_deal_child_tables(account_name: str | None = None, limit: int | Non
                 continue
         try:
             doc = frappe.get_doc("CRM Deal", deal_name)
-            iy_soql = (
-                f"SELECT {', '.join(INCOME_YEAR_FIELDS)} FROM Income_year__c "
-                f"WHERE Grant_Or_Donation__c = '{sf_id}'"
-            )
-            doc.set(
-                "custom_income_years",
-                [build_income_year_row(r) for r in client.query(iy_soql)],
-            )
-            pay_soql = (
-                f"SELECT {', '.join(PAYMENT_FIELDS)} FROM npe01__OppPayment__c "
-                f"WHERE npe01__Opportunity__c = '{sf_id}'"
-            )
-            doc.set(
-                "custom_payment_schedule",
-                [build_payment_row(r, today) for r in client.query(pay_soql)],
-            )
+            if has_income_years:
+                iy_soql = (
+                    f"SELECT {', '.join(INCOME_YEAR_FIELDS)} FROM Income_year__c "
+                    f"WHERE Grant_Or_Donation__c = '{sf_id}'"
+                )
+                doc.set(
+                    "custom_income_years",
+                    [build_income_year_row(r) for r in client.query(iy_soql)],
+                )
+            if has_payments:
+                pay_soql = (
+                    f"SELECT {', '.join(PAYMENT_FIELDS)} FROM npe01__OppPayment__c "
+                    f"WHERE npe01__Opportunity__c = '{sf_id}'"
+                )
+                doc.set(
+                    "custom_payment_schedule",
+                    [build_payment_row(r, today) for r in client.query(pay_soql)],
+                )
             doc.save(ignore_permissions=True)
             frappe.db.commit()
             processed += 1

@@ -94,11 +94,35 @@ class OpportunitySyncer(BaseSyncer):
         opp_id = rec.get("Id")
         if not opp_id:
             return
+        has_income_years, has_payments = self._grant_child_tables_present()
+        # Benches without the PEAS grant child tables (these doctypes/fields
+        # are owned by a separate app, not frappe_salesforce) get a clean
+        # no-op — and crucially we skip the SF queries so we don't burn API
+        # calls fetching child records there's nowhere to store.
+        if not (has_income_years or has_payments):
+            return
         changed = False
-        changed |= self._sync_income_years(opp_id, doc)
-        changed |= self._sync_payments(opp_id, doc)
+        if has_income_years:
+            changed |= self._sync_income_years(opp_id, doc)
+        if has_payments:
+            changed |= self._sync_payments(opp_id, doc)
         if changed:
             doc.save(ignore_permissions=True)
+
+    def _grant_child_tables_present(self) -> tuple[bool, bool]:
+        """Whether the CRM Deal grant child tables exist on this bench.
+
+        Cached per syncer instance; one ``get_meta`` for the whole run.
+        """
+        cached = getattr(self, "_grant_child_tables_cache", None)
+        if cached is None:
+            meta = frappe.get_meta(self.frappe_doctype)
+            cached = (
+                bool(meta.get_field("custom_income_years")),
+                bool(meta.get_field("custom_payment_schedule")),
+            )
+            self._grant_child_tables_cache = cached
+        return cached
 
     def _sync_income_years(self, opp_id: str, doc) -> bool:
         soql = (
