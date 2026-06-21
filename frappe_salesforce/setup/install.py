@@ -6,10 +6,16 @@ import frappe
 from frappe.utils import now_datetime
 
 from .custom_fields import SF_ID_DOCTYPES, ensure_all_custom_fields
-from .default_mappings import seed_default_field_mappings
+from .default_mappings import ensure_default_field_mappings, seed_default_field_mappings
 
 #: Re-exported for backwards-compat with patches/v0_0_1.
-__all__ = ["after_install", "ensure_all_custom_fields", "SF_ID_DOCTYPES", "HWM_FIELDS"]
+__all__ = [
+    "after_install",
+    "after_migrate",
+    "ensure_all_custom_fields",
+    "SF_ID_DOCTYPES",
+    "HWM_FIELDS",
+]
 
 # Fields on Salesforce Settings that hold per-syncer high-water marks.
 # Default to install-time ``now()`` so the first tick does NOT backfill
@@ -31,6 +37,26 @@ def after_install() -> None:
     _ensure_custom_fields()
     _ensure_default_settings()
     seed_default_field_mappings()
+    frappe.db.commit()
+
+
+def after_migrate() -> None:
+    """Self-heal default field mappings on every ``bench migrate``.
+
+    Unlike ``after_install`` (fresh installs only) and the one-shot
+    ``extend_default_mappings`` patch (Frappe runs each patch exactly once,
+    so it can't re-seed a site whose ``Salesforce Field Mapping`` records
+    were never created or were later deleted), this runs on *every*
+    migrate. ``ensure_default_field_mappings`` is additive and idempotent:
+    it creates any missing object mapping, appends missing default rows,
+    and never removes admin customisations — so a deploy + migrate always
+    converges a site to a complete set of mappings.
+
+    ``validate=False`` so a migrate can never be aborted by the readiness
+    guard; the per-sync path (``IncrementalSyncRunner.run``) still validates
+    before each run.
+    """
+    ensure_default_field_mappings(validate=False)
     frappe.db.commit()
 
 

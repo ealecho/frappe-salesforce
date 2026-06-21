@@ -11,6 +11,15 @@ required_apps = ["frappe/crm"]
 after_install = "frappe_salesforce.setup.install.after_install"
 before_uninstall = "frappe_salesforce.setup.uninstall.before_uninstall"
 
+# Migration hooks
+#
+# Self-heal default Salesforce Field Mappings on every ``bench migrate``.
+# after_install only fires on fresh installs and patches run once, so a
+# site whose mapping records were never seeded (or were deleted) would
+# otherwise sync blank fields. ``ensure_default_field_mappings`` is
+# idempotent + additive, so re-running it every migrate is safe and cheap.
+after_migrate = "frappe_salesforce.setup.install.after_migrate"
+
 # Scheduler
 scheduler_events = {
     "cron": {
