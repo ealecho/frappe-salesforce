@@ -17,11 +17,73 @@ from frappe_salesforce.setup.default_mappings import (
 )
 from frappe_salesforce.sync.registry import SYNCERS
 
+#: Redis key (namespaced per site) guarding against concurrent sync runs.
+SYNC_LOCK_KEY = "frappe_salesforce:incremental_sync_lock"
+#: Lock TTL in seconds. Auto-releases if a worker is killed mid-run (e.g.
+#: RQ job timeout) so a crash can never wedge the scheduler permanently.
+#: Must comfortably exceed a single run's wall time (a run is bounded by
+#: the per-tick API budget, so it ends well before this).
+SYNC_LOCK_TTL = 3600
+
+
+def _sync_lock_key() -> str:
+    # Namespace by site: a shared Redis backs multiple sites on one bench.
+    return f"{SYNC_LOCK_KEY}:{getattr(frappe.local, 'site', '') or 'default'}"
+
+
+def _acquire_sync_lock() -> bool:
+    """Atomically claim the sync lock. Returns False if already held.
+
+    Fails open (returns True) if the cache backend is unreachable — a
+    missing lock should never prevent syncing entirely, only guard the
+    common case.
+    """
+    try:
+        # redis SET NX EX — atomic claim with auto-expiry.
+        return bool(
+            frappe.cache().set(
+                _sync_lock_key(), str(now_datetime()), nx=True, ex=SYNC_LOCK_TTL
+            )
+        )
+    except Exception:
+        frappe.log_error(
+            title="frappe_salesforce: sync lock acquire failed (failing open)",
+            message=frappe.get_traceback(),
+        )
+        return True
+
+
+def _release_sync_lock() -> None:
+    try:
+        frappe.cache().delete(_sync_lock_key())
+    except Exception:
+        # TTL will reclaim it; nothing to do.
+        pass
+
 
 class IncrementalSyncRunner:
     """Run all registered syncers in order, recording a Sync Log."""
 
-    def run(self) -> str:
+    def run(self) -> str | None:
+        """Entry point. Serialised: only one run proceeds at a time.
+
+        If another run holds the lock, this trigger is skipped (returns
+        ``None``) rather than running concurrently — concurrent writers
+        collide on Frappe's optimistic-concurrency check
+        (``TimestampMismatchError``) and pile up zombie "Running" logs.
+        """
+        if not _acquire_sync_lock():
+            frappe.logger("frappe_salesforce").info(
+                "Incremental sync already in progress; skipping this trigger."
+            )
+            return None
+        try:
+            self._reap_stale_running_logs()
+            return self._run()
+        finally:
+            _release_sync_lock()
+
+    def _run(self) -> str:
         log = self._create_log()
         try:
             ensure_default_field_mappings()
@@ -98,6 +160,35 @@ class IncrementalSyncRunner:
         log.save(ignore_permissions=True)
         frappe.db.commit()
         return log.name
+
+    def _reap_stale_running_logs(self) -> None:
+        """Close out logs left "Running" by a previous killed worker.
+
+        We only get here holding the lock, so no run is genuinely active —
+        any "Running" log is a corpse from a worker that was killed (e.g.
+        RQ job timeout) before it could finalise its status. Mark them
+        Failed so the log history reflects reality.
+        """
+        stale = frappe.get_all(
+            "Salesforce Sync Log", filters={"status": "Running"}, pluck="name"
+        )
+        if not stale:
+            return
+        for name in stale:
+            frappe.db.set_value(
+                "Salesforce Sync Log",
+                name,
+                {
+                    "status": "Failed",
+                    "error_summary": (
+                        "Aborted: superseded by a new run (previous run did "
+                        "not finish — likely worker timeout)."
+                    ),
+                    "end_time": now_datetime(),
+                },
+                update_modified=False,
+            )
+        frappe.db.commit()
 
     def _create_log(self):
         log = frappe.new_doc("Salesforce Sync Log")
