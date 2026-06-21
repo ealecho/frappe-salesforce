@@ -55,9 +55,22 @@ def after_migrate() -> None:
     ``validate=False`` so a migrate can never be aborted by the readiness
     guard; the per-sync path (``IncrementalSyncRunner.run``) still validates
     before each run.
+
+    Any failure is logged and swallowed: this hook runs in the shared
+    ``after_migrate`` phase of ``bench migrate``, so an exception here would
+    abort migration for *every* app on the bench. A mapping-seed problem
+    must never have that blast radius — it is rolled back and recorded to
+    the Error Log for follow-up instead.
     """
-    ensure_default_field_mappings(validate=False)
-    frappe.db.commit()
+    try:
+        ensure_default_field_mappings(validate=False)
+        frappe.db.commit()
+    except Exception:
+        frappe.db.rollback()
+        frappe.log_error(
+            title="frappe_salesforce after_migrate: mapping seed failed",
+            message=frappe.get_traceback(),
+        )
 
 
 def _ensure_custom_fields() -> None:
