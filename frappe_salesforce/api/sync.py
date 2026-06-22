@@ -190,7 +190,13 @@ def backfill_deal_child_tables(account_name: str | None = None, limit: int | Non
                 )
                 doc.set(
                     "custom_payment_schedule",
-                    [build_payment_row(r, today) for r in client.query(pay_soql)],
+                    [
+                        row
+                        for row in (
+                            build_payment_row(r, today) for r in client.query(pay_soql)
+                        )
+                        if row is not None
+                    ],
                 )
             doc.save(ignore_permissions=True)
             frappe.db.commit()

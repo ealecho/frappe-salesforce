@@ -140,7 +140,7 @@ class OpportunitySyncer(BaseSyncer):
             f"WHERE npe01__Opportunity__c = '{opp_id}'"
         )
         rows = [build_payment_row(r, today) for r in self.client.query(soql)]
-        doc.set("custom_payment_schedule", rows)
+        doc.set("custom_payment_schedule", [r for r in rows if r is not None])
         return True
 
 
@@ -168,8 +168,18 @@ def build_income_year_row(rec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_payment_row(rec: dict[str, Any], today: date | None = None) -> dict[str, Any]:
+def build_payment_row(
+    rec: dict[str, Any], today: date | None = None
+) -> dict[str, Any] | None:
     """Map one ``npe01__OppPayment__c`` record to a CRM Grant Payment row.
+
+    ``expected_payment_date`` is mandatory on CRM Grant Payment. Salesforce
+    payments don't always carry ``npe01__Scheduled_Date__c`` (e.g. a payment
+    logged after the fact), so we fall back to the actual payment date
+    (``npe01__Payment_Date__c``). If *neither* date exists we return
+    ``None`` to signal "skip this row" — emitting a row without the
+    mandatory field raises ``MandatoryError`` and fails the whole CRM Deal
+    save, which would drop every other (valid) grid row too.
 
     ``amount_received`` / ``payment_received_date`` are only populated once
     the payment is marked paid in Salesforce. ``fx_difference`` and
@@ -178,11 +188,15 @@ def build_payment_row(rec: dict[str, Any], today: date | None = None) -> dict[st
     paid = bool(rec.get("npe01__Paid__c"))
     written_off = bool(rec.get("npe01__Written_Off__c"))
     scheduled = rec.get("npe01__Scheduled_Date__c")
+    payment_date = rec.get("npe01__Payment_Date__c")
     amount = rec.get("npe01__Payment_Amount__c")
+    expected_date = scheduled or payment_date
+    if not expected_date:
+        return None
     return {
-        "expected_payment_date": scheduled,
+        "expected_payment_date": expected_date,
         "amount_expected": amount,
-        "payment_received_date": rec.get("npe01__Payment_Date__c") if paid else None,
+        "payment_received_date": payment_date if paid else None,
         "amount_received": amount if paid else None,
         "payment_status": derive_payment_status(paid, written_off, scheduled, today),
     }

@@ -83,6 +83,36 @@ def test_payment_row_paid():
     assert row["amount_received"] == 100000.0
 
 
+def test_payment_row_falls_back_to_payment_date_when_no_scheduled():
+    # No scheduled date, but a real payment date exists -> use it for the
+    # mandatory expected_payment_date rather than emitting None.
+    rec = {
+        "npe01__Scheduled_Date__c": None,
+        "npe01__Payment_Amount__c": 5000.0,
+        "npe01__Payment_Date__c": "2021-09-01",
+        "npe01__Paid__c": True,
+        "npe01__Written_Off__c": False,
+    }
+    row = build_payment_row(rec, today=date(2026, 1, 1))
+    assert row is not None
+    assert row["expected_payment_date"] == "2021-09-01"
+    assert row["payment_status"] == "Received"
+
+
+def test_payment_row_skipped_when_no_dates():
+    # Neither scheduled nor payment date -> can't satisfy the mandatory
+    # expected_payment_date, so the row is skipped (None) instead of
+    # blowing up the whole deal save with MandatoryError.
+    rec = {
+        "npe01__Scheduled_Date__c": None,
+        "npe01__Payment_Amount__c": 5000.0,
+        "npe01__Payment_Date__c": None,
+        "npe01__Paid__c": False,
+        "npe01__Written_Off__c": False,
+    }
+    assert build_payment_row(rec, today=date(2026, 1, 1)) is None
+
+
 def test_payment_status_rules():
     today = date(2020, 1, 1)
     assert derive_payment_status(True, False, "2019-01-01", today) == "Received"
