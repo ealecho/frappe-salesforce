@@ -1,0 +1,31 @@
+{
+ "actions": [],
+ "creation": "2026-01-01 00:00:00",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "cost_code",
+  "cost_type",
+  "fiscal_year",
+  "amount",
+  "support_area"
+ ],
+ "fields": [
+  {"fieldname": "cost_code", "fieldtype": "Data", "label": "Cost Code", "in_list_view": 1, "columns": 3, "read_only": 1, "description": "Salesforce Cost_Code__c (Name_and_Description__c)."},
+  {"fieldname": "cost_type", "fieldtype": "Data", "label": "Cost Type", "in_list_view": 1, "columns": 1, "read_only": 1, "description": "Salesforce Cost_Code__c.Type__c (Opex / Capex / Other)."},
+  {"fieldname": "fiscal_year", "fieldtype": "Data", "label": "Fiscal Year", "in_list_view": 1, "columns": 1, "read_only": 1, "description": "Salesforce Fiscal_Year__c.Name."},
+  {"fieldname": "amount", "fieldtype": "Currency", "label": "Amount", "in_list_view": 1, "columns": 2, "read_only": 1, "description": "Salesforce Funding_Allocation_Year__c.Amount__c."},
+  {"fieldname": "support_area", "fieldtype": "Data", "label": "Support Area", "in_list_view": 1, "columns": 2, "read_only": 1, "description": "Salesforce Support_Area__c.Short_Name__c (often blank)."}
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-01-01 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Frappe Salesforce",
+ "name": "CRM Grant Budget",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC"
+}
