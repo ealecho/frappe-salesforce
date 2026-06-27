@@ -119,6 +119,8 @@ def backfill_deal_child_tables(account_name: str | None = None, limit: int | Non
 
     from frappe_salesforce.salesforce.client import SalesforceClient
     from frappe_salesforce.sync.opportunities import (
+        budget_soql,
+        build_budget_row,
         build_income_year_row,
         build_payment_row,
         INCOME_YEAR_FIELDS,
@@ -134,13 +136,14 @@ def backfill_deal_child_tables(account_name: str | None = None, limit: int | Non
     meta = frappe.get_meta("CRM Deal")
     has_income_years = bool(meta.get_field("custom_income_years"))
     has_payments = bool(meta.get_field("custom_payment_schedule"))
-    if not (has_income_years or has_payments):
+    has_budget = bool(meta.get_field("custom_grant_budget"))
+    if not (has_income_years or has_payments or has_budget):
         return {
             "ok": False,
             "reason": (
-                "CRM Deal has neither custom_income_years nor "
-                "custom_payment_schedule; the grant child tables are not "
-                "installed on this bench."
+                "CRM Deal has none of custom_income_years, "
+                "custom_payment_schedule or custom_grant_budget; the grant "
+                "child tables are not installed on this bench."
             ),
         }
 
@@ -197,6 +200,11 @@ def backfill_deal_child_tables(account_name: str | None = None, limit: int | Non
                         )
                         if row is not None
                     ],
+                )
+            if has_budget:
+                doc.set(
+                    "custom_grant_budget",
+                    [build_budget_row(r) for r in client.query(budget_soql(sf_id))],
                 )
             doc.save(ignore_permissions=True)
             frappe.db.commit()

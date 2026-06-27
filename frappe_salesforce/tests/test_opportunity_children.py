@@ -7,6 +7,8 @@ real Salesforce record shapes captured from the Four Acre Trust grants.
 from datetime import date
 
 from frappe_salesforce.sync.opportunities import (
+    budget_soql,
+    build_budget_row,
     build_income_year_row,
     build_payment_row,
     derive_payment_status,
@@ -111,6 +113,71 @@ def test_payment_row_skipped_when_no_dates():
         "npe01__Written_Off__c": False,
     }
     assert build_payment_row(rec, today=date(2026, 1, 1)) is None
+
+
+# Captured from SF: a Funding_Allocation_Year__c budget cell for a Four
+# Acre Trust grant, with the relationship hops Salesforce nests in the
+# query response.
+BUDGET_CELL = {
+    "Amount__c": 15303.0,
+    "Fiscal_Year__r": {"Name": "2026"},
+    "Funding_Allocation__r": {
+        "Cost_Code__r": {
+            "Name_and_Description__c": "01-03 - UG / Construction (Other)",
+            "Type__c": "Other",
+        },
+        "Support_Area__r": {"Short_Name__c": "Construction"},
+    },
+}
+
+
+def test_budget_row_maps_nested_fields():
+    row = build_budget_row(BUDGET_CELL)
+    assert row["amount"] == 15303.0
+    assert row["fiscal_year"] == "2026"
+    assert row["cost_code"] == "01-03 - UG / Construction (Other)"
+    assert row["cost_type"] == "Other"
+    assert row["support_area"] == "Construction"
+
+
+def test_budget_row_handles_null_support_area():
+    # Support_Area__r is frequently null on the allocation (see the
+    # Unrestricted/Opex cells) — must not raise on the missing hop.
+    cell = {
+        "Amount__c": 4697.0,
+        "Fiscal_Year__r": {"Name": "2026"},
+        "Funding_Allocation__r": {
+            "Cost_Code__r": {
+                "Name_and_Description__c": "00-01 - Unrestricted / Opex (Opex)",
+                "Type__c": "Opex",
+            },
+            "Support_Area__r": None,
+        },
+    }
+    row = build_budget_row(cell)
+    assert row["support_area"] is None
+    assert row["cost_code"] == "00-01 - Unrestricted / Opex (Opex)"
+
+
+def test_budget_row_handles_fully_sparse_cell():
+    # Defensive: every relationship hop missing -> all-blank row, no raise.
+    row = build_budget_row({"Amount__c": 0.0})
+    assert row == {
+        "cost_code": None,
+        "cost_type": None,
+        "support_area": None,
+        "fiscal_year": None,
+        "amount": 0.0,
+    }
+
+
+def test_budget_soql_filters_by_parent_opportunity():
+    soql = budget_soql("006XXENO")
+    assert "FROM Funding_Allocation_Year__c" in soql
+    assert "Funding_Allocation__r.Grant_Or_Donation__c = '006XXENO'" in soql
+    # Traverses to the cost code + fiscal year labels.
+    assert "Fiscal_Year__r.Name" in soql
+    assert "Cost_Code__r.Name_and_Description__c" in soql
 
 
 def test_payment_status_rules():
