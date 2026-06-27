@@ -229,6 +229,90 @@ def backfill_deal_child_tables(account_name: str | None = None, limit: int | Non
 
 
 @frappe.whitelist()
+def resync_opportunities(account_name: str | None = None, limit: int | None = None):
+    """Re-pull Opportunities through the full mapping to refresh scalar fields.
+
+    Unlike ``backfill_deal_child_tables`` (which only rebuilds the grids),
+    this re-runs the complete ``OpportunitySyncer`` mapping for each deal —
+    so it picks up corrected field mappings (e.g. the stage→status change
+    that drives ``probability`` via ``peas_crm``) without resetting the
+    Opportunity high-water mark and replaying all of history.
+
+    Each record is re-fetched and re-upserted exactly as a normal sync
+    would, including ``after_upsert`` (income year / payment / budget
+    grids). The Opportunity HWM is left untouched.
+
+    Args:
+        account_name: Optional CRM Organization name to restrict to one
+            account's deals (e.g. ``"John Bothamley"``).
+        limit: Optional cap on the number of deals processed.
+    """
+    frappe.only_for("System Manager")
+
+    from frappe_salesforce.salesforce.client import SalesforceClient
+    from frappe_salesforce.sync.opportunities import OpportunitySyncer
+
+    if limit is not None:
+        limit = int(limit)
+
+    links = frappe.get_all(
+        "Salesforce Record Link",
+        filters={"salesforce_object": "Opportunity", "frappe_doctype": "CRM Deal"},
+        fields=["salesforce_id", "frappe_name"],
+    )
+
+    # Restrict to one account's deals if requested.
+    sf_ids: list[str] = []
+    for link in links:
+        deal_name = link.get("frappe_name")
+        sf_id = link.get("salesforce_id")
+        if not deal_name or not sf_id:
+            continue
+        if not frappe.db.exists("CRM Deal", deal_name):
+            continue
+        if account_name:
+            org = frappe.db.get_value("CRM Deal", deal_name, "organization")
+            if org != account_name:
+                continue
+        sf_ids.append(sf_id)
+        if limit and len(sf_ids) >= limit:
+            break
+
+    client = SalesforceClient()
+    syncer = OpportunitySyncer(client, frappe._dict())
+    fields = list(dict.fromkeys(["Id", "SystemModstamp", *syncer._soql_fields()]))
+    select = ", ".join(fields)
+
+    processed = failed = 0
+    # Batch the SF re-fetch (200 ids/query) to keep API calls down; the
+    # per-record after_upsert grid queries still cost the usual ~3 each.
+    for start in range(0, len(sf_ids), 200):
+        chunk = sf_ids[start : start + 200]
+        id_list = ", ".join(f"'{i}'" for i in chunk)
+        soql = f"SELECT {select} FROM Opportunity WHERE Id IN ({id_list})"
+        for rec in client.query(soql):
+            try:
+                syncer._process_record(rec)
+                frappe.db.commit()
+                processed += 1
+            except Exception as e:
+                failed += 1
+                frappe.db.rollback()
+                frappe.log_error(
+                    title=f"SF resync Opportunity {rec.get('Id')}",
+                    message=frappe.get_traceback() or str(e),
+                )
+
+    return {
+        "ok": True,
+        "deals_matched": len(sf_ids),
+        "deals_processed": processed,
+        "failed": failed,
+        "account_name": account_name,
+    }
+
+
+@frappe.whitelist()
 def get_api_usage():
     """Return last-observed Salesforce API usage + today's app-level count."""
     frappe.only_for("System Manager")
