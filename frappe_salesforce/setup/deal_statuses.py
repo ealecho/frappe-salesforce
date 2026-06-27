@@ -39,7 +39,13 @@ PEAS_DEAL_STATUSES: list[dict] = [
 
 
 def ensure_peas_deal_statuses() -> None:
-    """Create/converge the PEAS-mirror CRM Deal Status records. Idempotent."""
+    """Create/converge the PEAS-mirror CRM Deal Status records. Idempotent.
+
+    No-ops if ``CRM Deal Status`` isn't installed (Frappe CRM absent), so
+    this never aborts install/migrate on a non-CRM bench.
+    """
+    if not frappe.db.exists("DocType", "CRM Deal Status"):
+        return
     for spec in PEAS_DEAL_STATUSES:
         name = spec["deal_status"]
         if frappe.db.exists("CRM Deal Status", name):
