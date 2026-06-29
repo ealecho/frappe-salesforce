@@ -37,6 +37,33 @@ PAYMENT_FIELDS = (
     "npe01__Written_Off__c",
 )
 
+#: Salesforce ``Funding_Allocation_Year__c`` (NPSP "Grant / Donation Budget"
+#: matrix cell) fields pulled to populate the CRM Deal
+#: ``custom_grant_budget`` grid (CRM Grant Budget). Each cell is one cost
+#: code × fiscal year amount. The values live two hops from the cell:
+#: ``Funding_Allocation__r`` gives the cost code + parent grant, and
+#: ``Fiscal_Year__r`` gives the year label. The lookup back to the parent
+#: Opportunity is ``Funding_Allocation__r.Grant_Or_Donation__c``.
+#:
+#: NB this is a relationship-traversing SELECT (not a flat field list like
+#: the others), so it's a ready-made clause string rather than a tuple.
+BUDGET_SELECT = (
+    "Amount__c, "
+    "Fiscal_Year__r.Name, "
+    "Funding_Allocation__r.Cost_Code__r.Name_and_Description__c, "
+    "Funding_Allocation__r.Cost_Code__r.Type__c, "
+    "Funding_Allocation__r.Support_Area__r.Short_Name__c"
+)
+BUDGET_PARENT_LOOKUP = "Funding_Allocation__r.Grant_Or_Donation__c"
+
+
+def budget_soql(opp_id: str) -> str:
+    """SOQL to fetch every budget cell for one Opportunity."""
+    return (
+        f"SELECT {BUDGET_SELECT} FROM Funding_Allocation_Year__c "
+        f"WHERE {BUDGET_PARENT_LOOKUP} = '{opp_id}'"
+    )
+
 
 class OpportunitySyncer(BaseSyncer):
     salesforce_object = "Opportunity"
@@ -94,25 +121,30 @@ class OpportunitySyncer(BaseSyncer):
         opp_id = rec.get("Id")
         if not opp_id:
             return
-        has_income_years, has_payments = self._grant_child_tables_present()
+        has_income_years, has_payments, has_budget = (
+            self._grant_child_tables_present()
+        )
         # Benches without the PEAS grant child tables (these doctypes/fields
         # are owned by a separate app, not frappe_salesforce) get a clean
         # no-op — and crucially we skip the SF queries so we don't burn API
         # calls fetching child records there's nowhere to store.
-        if not (has_income_years or has_payments):
+        if not (has_income_years or has_payments or has_budget):
             return
         changed = False
         if has_income_years:
             changed |= self._sync_income_years(opp_id, doc)
         if has_payments:
             changed |= self._sync_payments(opp_id, doc)
+        if has_budget:
+            changed |= self._sync_budget(opp_id, doc)
         if changed:
             doc.save(ignore_permissions=True)
 
-    def _grant_child_tables_present(self) -> tuple[bool, bool]:
+    def _grant_child_tables_present(self) -> tuple[bool, bool, bool]:
         """Whether the CRM Deal grant child tables exist on this bench.
 
-        Cached per syncer instance; one ``get_meta`` for the whole run.
+        Returns ``(income_years, payments, budget)``. Cached per syncer
+        instance; one ``get_meta`` for the whole run.
         """
         cached = getattr(self, "_grant_child_tables_cache", None)
         if cached is None:
@@ -120,6 +152,7 @@ class OpportunitySyncer(BaseSyncer):
             cached = (
                 bool(meta.get_field("custom_income_years")),
                 bool(meta.get_field("custom_payment_schedule")),
+                bool(meta.get_field("custom_grant_budget")),
             )
             self._grant_child_tables_cache = cached
         return cached
@@ -141,6 +174,11 @@ class OpportunitySyncer(BaseSyncer):
         )
         rows = [build_payment_row(r, today) for r in self.client.query(soql)]
         doc.set("custom_payment_schedule", [r for r in rows if r is not None])
+        return True
+
+    def _sync_budget(self, opp_id: str, doc) -> bool:
+        rows = [build_budget_row(r) for r in self.client.query(budget_soql(opp_id))]
+        doc.set("custom_grant_budget", rows)
         return True
 
 
@@ -199,6 +237,33 @@ def build_payment_row(
         "payment_received_date": payment_date if paid else None,
         "amount_received": amount if paid else None,
         "payment_status": derive_payment_status(paid, written_off, scheduled, today),
+    }
+
+
+def build_budget_row(rec: dict[str, Any]) -> dict[str, Any]:
+    """Map one ``Funding_Allocation_Year__c`` cell to a CRM Grant Budget row.
+
+    The cell holds only ``Amount__c`` + a ``Fiscal_Year__c`` lookup; the
+    cost code (and its type) and support area come one hop up via the
+    parent ``Funding_Allocation__c``. Salesforce returns these as *nested*
+    relationship dicts (``Funding_Allocation__r.Cost_Code__r.…``), any of
+    which can be ``null`` — e.g. an allocation with no support area — so
+    every hop is dereferenced defensively.
+
+    No column is mandatory on CRM Grant Budget, so (unlike payments) a
+    sparse cell never needs to be skipped; it just maps to a row with some
+    blanks.
+    """
+    alloc = rec.get("Funding_Allocation__r") or {}
+    cost_code = alloc.get("Cost_Code__r") or {}
+    support_area = alloc.get("Support_Area__r") or {}
+    fiscal_year = rec.get("Fiscal_Year__r") or {}
+    return {
+        "cost_code": cost_code.get("Name_and_Description__c"),
+        "cost_type": cost_code.get("Type__c"),
+        "support_area": support_area.get("Short_Name__c"),
+        "fiscal_year": fiscal_year.get("Name"),
+        "amount": rec.get("Amount__c"),
     }
 
 

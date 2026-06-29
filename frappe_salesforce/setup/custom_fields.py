@@ -527,6 +527,19 @@ CRM_DEAL_FIELDS: list[dict] = [
     _data("custom_sf_bde_batch", "SF BDE Batch"),
     _data("custom_sf_legacy_id", "SF Legacy Opportunity ID"),
     _data("custom_sf_cheque_number", "Cheque Reference"),
+    # ---- Grant / Donation Budget grid ----
+    # Populated from Salesforce Funding_Allocation_Year__c (cost code x
+    # fiscal year amounts) by OpportunitySyncer. The child doctype is
+    # shipped by this app (see doctype/crm_grant_budget); this Table field
+    # is the slot for it on CRM Deal. Not custom_sf_-prefixed because it's
+    # a relationship grid, not a scalar SF field mirror.
+    {
+        "fieldname": "custom_grant_budget",
+        "label": "Grant / Donation Budget",
+        "fieldtype": "Table",
+        "options": "CRM Grant Budget",
+        "no_copy": 1,
+    },
 ]
 
 

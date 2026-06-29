@@ -90,6 +90,39 @@ def test_all_standard_sf_stages_covered():
         assert stage in DEAL_STAGE_MAP
 
 
+def test_peas_active_stages_pass_through_unchanged():
+    # The active PEAS pipeline stages mirror 1:1 onto CRM Deal Statuses
+    # carrying the exact SF probability, so the stage name must pass through
+    # unchanged — a remap here would land the deal on the wrong status and
+    # break the probability (peas_crm derives it from the status).
+    for stage in [
+        "Research",
+        "Cold proposal or positive meeting",
+        "Warm proposal to new funder",
+        "Warm proposal to existing funder",
+        "Final stage proposal",
+        "Finalising",
+        "Won",
+        "Lost",
+        "Reporting Delivered",
+    ]:
+        assert map_deal_stage(stage) == stage
+
+
+def test_peas_deal_status_seed_probabilities_match_sf():
+    from frappe_salesforce.setup.deal_statuses import PEAS_DEAL_STATUSES
+
+    by_name = {s["deal_status"]: s for s in PEAS_DEAL_STATUSES}
+    # Probabilities mirror the SF OpportunityStage DefaultProbability ladder.
+    assert by_name["Research"]["probability"] == 1
+    assert by_name["Final stage proposal"]["probability"] == 75
+    assert by_name["Finalising"]["probability"] == 90
+    # Closed flags map onto CRM Deal Status types.
+    assert by_name["Won"]["type"] == "Won" and by_name["Won"]["probability"] == 100
+    assert by_name["Lost"]["type"] == "Lost" and by_name["Lost"]["probability"] == 0
+    assert by_name["Reporting Delivered"]["type"] == "Won"
+
+
 def test_map_deal_lost_reason_returns_none_for_won():
     assert map_deal_lost_reason("Won") is None
     assert map_deal_lost_reason("Closed Won") is None

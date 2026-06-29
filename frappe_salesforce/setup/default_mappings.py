@@ -880,7 +880,11 @@ DEFAULT_MAPPINGS: list[dict] = [
                 "frappe_field": "lost_reason",
                 "transform": "deal_lost_reason_link",
             },
-            {"sf_field": "Probability", "frappe_field": "probability"},
+            # NOTE: SF ``Probability`` is intentionally NOT mapped. In this
+            # CRM the ``peas_crm`` validate hook derives ``probability`` from
+            # the CRM Deal Status, overwriting any value we set — so the SF
+            # number flows via the stage→status mapping (StageName below +
+            # setup/deal_statuses.py), not a direct field map.
             {"sf_field": "NextStep", "frappe_field": "custom_sf_next_step"},
             {
                 "sf_field": "ContactId",

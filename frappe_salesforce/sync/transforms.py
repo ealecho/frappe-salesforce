@@ -357,34 +357,34 @@ def lead_status_link(sf_status: str | None) -> str | None:
 
 # PEAS NPSP stages → Frappe CRM Deal statuses.
 # Standard SF stages kept for defensive coverage.
+#
+# The active PEAS pipeline stages (Research, Cold proposal…, Warm proposal…,
+# Final stage proposal, Finalising, Won, Lost, Reporting Delivered) are
+# mirrored 1:1 as CRM Deal Status records carrying the exact SF probability
+# (seeded by ``setup/deal_statuses.py``). Those stages are therefore *not*
+# remapped here — ``map_deal_stage`` falls back to returning the stage name
+# unchanged, so they link straight to the matching status and ``peas_crm``
+# derives the right probability from it. Only synonyms / legacy / standard
+# SF stages are normalised onto a canonical mirror status below.
 DEAL_STAGE_MAP = {
-    # PEAS custom stages
-    "Won": "Won",
+    # Won synonyms → the "Won" mirror status
     "Grant Won": "Won",
     "Donation received": "Won",
-    "Reporting Delivered": "Won",
-    "Pledged": "Ready to Close",
-    "Finalising": "Negotiation",
-    "Final stage proposal": "Negotiation",
-    "Warm proposal to existing funder": "Proposal/Quotation",
-    "Warm proposal to new funder": "Proposal/Quotation",
-    "Cold proposal or positive meeting": "Demo/Making",
-    "Research": "Qualification",
-    "Fundraising target": "Qualification",
-    "Lost": "Lost",
+    "Closed Won": "Won",
+    # Lost synonyms → the "Lost" mirror status
     "Withdrawn": "Lost",
     "Grant unsuccessful": "Lost",
-    # Standard SF stages (fallback)
-    "Prospecting": "Qualification",
-    "Qualification": "Qualification",
-    "Needs Analysis": "Demo/Making",
-    "Value Proposition": "Demo/Making",
-    "Id. Decision Makers": "Demo/Making",
-    "Perception Analysis": "Demo/Making",
-    "Proposal/Price Quote": "Proposal/Quotation",
-    "Negotiation/Review": "Negotiation",
-    "Closed Won": "Won",
+    "Unsuccesful": "Lost",  # SF data carries this misspelling
     "Closed Lost": "Lost",
+    # Legacy / standard SF stages → nearest active mirror stage
+    "Fundraising target": "Research",
+    "Pledged": "Finalising",
+    "Prospecting": "Research",
+    "Qualification": "Research",
+    "Needs Analysis": "Cold proposal or positive meeting",
+    "Value Proposition": "Warm proposal to new funder",
+    "Proposal/Price Quote": "Final stage proposal",
+    "Negotiation/Review": "Finalising",
 }
 
 

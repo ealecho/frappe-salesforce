@@ -14,3 +14,6 @@ frappe_salesforce.patches.v0_1_0.widen_file_location
 frappe_salesforce.patches.v0_1_0.set_file_location_html_strip
 frappe_salesforce.patches.v0_1_0.clear_desynced_sf_token
 frappe_salesforce.patches.v0_1_0.wire_salutation_link
+frappe_salesforce.patches.v0_1_0.add_grant_budget_field
+frappe_salesforce.patches.v0_1_0.seed_peas_deal_stages
+frappe_salesforce.patches.v0_1_0.drop_probability_mapping
