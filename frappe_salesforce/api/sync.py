@@ -312,6 +312,152 @@ def resync_opportunities(account_name: str | None = None, limit: int | None = No
     }
 
 
+def _count(client, sobject: str, where: str | None = None) -> int:
+    """Run a SOQL ``COUNT()`` and return totalSize."""
+    soql = f"SELECT COUNT() FROM {sobject}"
+    if where:
+        soql += f" WHERE {where}"
+    data = client._get(f"{client._base()}/query", params={"q": soql}).json()
+    return int(data.get("totalSize", 0))
+
+
+@frappe.whitelist()
+def retention_backfill_report():
+    """Dry-run: how many records each object KEEPs vs drops under the policy.
+
+    Non-destructive — just SOQL COUNT()s. Run this first to validate the
+    retention rules (see ``sync/retention.py``) before any purge / backfill.
+    """
+    frappe.only_for("System Manager")
+    from frappe_salesforce.salesforce.client import SalesforceClient
+    from frappe_salesforce.sync import retention
+
+    client = SalesforceClient(bypass_budget=True)
+    out: dict[str, Any] = {}
+    for obj, builder in (
+        ("Account", retention.account_keep_where),
+        ("Contact", retention.contact_keep_where),
+        ("Opportunity", retention.opportunity_keep_where),
+    ):
+        total = _count(client, obj)
+        keep = _count(client, obj, builder())
+        out[obj] = {"total": total, "keep": keep, "drop": total - keep}
+    return out
+
+
+@frappe.whitelist()
+def purge_synced_data(dry_run: str = "true"):
+    """Delete CRM records the sync created (tracked by Salesforce Record Link).
+
+    ``dry_run`` defaults to "true" (counts only). Pass ``dry_run=false`` to
+    actually delete — enqueued on the long queue because of volume and the
+    other apps' delete hooks. Only sync-created records are touched.
+    """
+    frappe.only_for("System Manager")
+    from frappe_salesforce.tasks.retention_backfill import purge_synced_records
+
+    dry = str(dry_run).lower() != "false"
+    if dry:
+        return purge_synced_records(dry_run=True)
+    frappe.enqueue(
+        "frappe_salesforce.tasks.retention_backfill.purge_synced_records",
+        queue="long",
+        timeout=36000,
+        job_name="salesforce_purge_synced_records",
+        dry_run=False,
+    )
+    return {"queued": True, "job": "salesforce_purge_synced_records"}
+
+
+@frappe.whitelist()
+def start_retention_backfill(limit: int | None = None):
+    """Import only records matching the retention KEEP rules. Enqueued."""
+    frappe.only_for("System Manager")
+    if limit is not None:
+        limit = int(limit)
+    frappe.enqueue(
+        "frappe_salesforce.tasks.retention_backfill.run_retention_backfill",
+        queue="long",
+        timeout=36000,
+        job_name="salesforce_retention_backfill",
+        limit=limit,
+    )
+    return {"queued": True, "job": "salesforce_retention_backfill"}
+
+
+@frappe.whitelist()
+def dedup_contacts(dry_run: str = "true"):
+    """Merge Frappe Contacts sharing first name + last name + email.
+
+    ``dry_run`` defaults to "true" (reports the duplicate groups). Pass
+    ``dry_run=false`` to merge: the first contact in each group is the survivor
+    and the rest are merged into it via ``frappe.rename_doc(merge=True)``.
+
+    CAUTION — sync-identity reconciliation: the survivor keeps a single unique
+    ``custom_salesforce_id``. Each merged-away contact's ``Salesforce Record
+    Link`` is re-pointed at the survivor so a future incremental sync updates
+    the survivor instead of re-creating the duplicate. The survivor's
+    ``custom_salesforce_id`` will then reflect whichever SF contact synced most
+    recently (the records collapse to one Frappe doc, by design). Review the
+    dry-run output before enabling.
+    """
+    frappe.only_for("System Manager")
+    dry = str(dry_run).lower() != "false"
+
+    rows = frappe.get_all(
+        "Contact", fields=["name", "first_name", "last_name", "email_id"]
+    )
+    groups: dict[tuple, list[str]] = {}
+    for r in rows:
+        email = (r.email_id or "").strip().lower()
+        if not email:
+            continue  # require an email to consider two contacts the same
+        key = ((r.first_name or "").strip().lower(), (r.last_name or "").strip().lower(), email)
+        groups.setdefault(key, []).append(r.name)
+    dupes = {k: v for k, v in groups.items() if len(v) > 1}
+
+    if dry:
+        return {
+            "dry_run": True,
+            "duplicate_groups": len(dupes),
+            "records_to_merge": sum(len(v) - 1 for v in dupes.values()),
+            "sample": [
+                {"first": k[0], "last": k[1], "email": k[2], "names": v}
+                for k, v in list(dupes.items())[:25]
+            ],
+        }
+
+    merged = failed = 0
+    for names in dupes.values():
+        survivor, *rest = names
+        for dup in rest:
+            try:
+                _merge_contact_into(dup, survivor)
+                merged += 1
+            except Exception:
+                failed += 1
+                frappe.db.rollback()
+                frappe.log_error(
+                    title=f"Contact dedup merge {dup} -> {survivor}",
+                    message=frappe.get_traceback(),
+                )
+    return {"dry_run": False, "merged": merged, "failed": failed, "groups": len(dupes)}
+
+
+def _merge_contact_into(dup: str, survivor: str) -> None:
+    """Merge ``dup`` into ``survivor`` and re-point its SF link at survivor."""
+    # Re-point the duplicate's Salesforce Record Link(s) before the merge
+    # removes the duplicate doc, so future syncs update the survivor.
+    for link in frappe.get_all(
+        "Salesforce Record Link",
+        filters={"frappe_doctype": "Contact", "frappe_name": dup},
+        fields=["name"],
+    ):
+        frappe.db.set_value("Salesforce Record Link", link.name, "frappe_name", survivor)
+    frappe.rename_doc("Contact", dup, survivor, merge=True, ignore_permissions=True)
+    frappe.db.commit()
+
+
 @frappe.whitelist()
 def get_api_usage():
     """Return last-observed Salesforce API usage + today's app-level count."""
