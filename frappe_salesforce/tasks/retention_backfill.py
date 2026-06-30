@@ -37,12 +37,15 @@ _ID_BATCH = 200
 PURGE_OBJECTS = {"Account", "Contact", "Opportunity", "Task", "Event"}
 
 
-def purge_synced_records(dry_run: bool = True) -> dict:
+def purge_synced_records(dry_run: bool = True, limit: int | None = None) -> dict:
     """Delete CRM records created by the sync, per ``Salesforce Record Link``.
 
-    Skips link-only objects (e.g. User — we never delete Users). HWMs are NOT
-    reset: leaving them at their current value keeps the post-purge incremental
-    tick from replaying the excluded history. ``dry_run`` only counts.
+    Skips link-only objects (e.g. User — we never delete Users) and objects not
+    re-imported (Lead). HWMs are NOT reset: leaving them at their current value
+    keeps the post-purge incremental tick from replaying the excluded history.
+    ``dry_run`` only counts. ``limit`` caps deletions per call so the purge can
+    be run inline in chunks (re-run until ``deleted`` is 0); each call re-reads
+    the remaining links, so chunked runs resume naturally.
     """
     by_object = {S.salesforce_object: S for S in SYNCERS}
     deleter = DeletionSyncRunner()
@@ -66,10 +69,17 @@ def purge_synced_records(dry_run: bool = True) -> dict:
         deleted += 1
         if deleted % 100 == 0:
             frappe.db.commit()
+        if limit and deleted >= limit:
+            break
     if not dry_run:
         frappe.db.commit()
 
-    return {"dry_run": dry_run, "by_doctype": counts, "total": sum(counts.values())}
+    return {
+        "dry_run": dry_run,
+        "by_doctype": counts,
+        "deleted": deleted,
+        "total": sum(counts.values()),
+    }
 
 
 def kept_parent_ids(client: SalesforceClient, spec: dict) -> set[str]:

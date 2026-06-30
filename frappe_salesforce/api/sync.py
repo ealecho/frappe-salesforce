@@ -349,25 +349,29 @@ def retention_backfill_report():
 
 
 @frappe.whitelist()
-def purge_synced_data(dry_run: str = "true"):
+def purge_synced_data(dry_run: str = "true", limit: int | None = None):
     """Delete CRM records the sync created (tracked by Salesforce Record Link).
 
     ``dry_run`` defaults to "true" (counts only). Pass ``dry_run=false`` to
     actually delete — enqueued on the long queue because of volume and the
-    other apps' delete hooks. Only sync-created records are touched.
+    other apps' delete hooks. Only sync-created records are touched. ``limit``
+    caps deletions for a chunked run.
     """
     frappe.only_for("System Manager")
     from frappe_salesforce.tasks.retention_backfill import purge_synced_records
 
+    if limit is not None:
+        limit = int(limit)
     dry = str(dry_run).lower() != "false"
     if dry:
-        return purge_synced_records(dry_run=True)
+        return purge_synced_records(dry_run=True, limit=limit)
     frappe.enqueue(
         "frappe_salesforce.tasks.retention_backfill.purge_synced_records",
         queue="long",
         timeout=36000,
         job_name="salesforce_purge_synced_records",
         dry_run=False,
+        limit=limit,
     )
     return {"queued": True, "job": "salesforce_purge_synced_records"}
 
