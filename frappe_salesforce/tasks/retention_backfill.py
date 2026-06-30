@@ -23,7 +23,6 @@ from frappe_salesforce.salesforce.client import SalesforceClient
 from frappe_salesforce.salesforce.soql import build_incremental_query
 from frappe_salesforce.sync import retention
 from frappe_salesforce.sync.registry import SYNCERS
-from frappe_salesforce.tasks.deletion import DeletionSyncRunner
 
 #: A "since" far enough back that ``SystemModstamp > since`` matches everything,
 #: so the retention predicate is the only effective filter.
@@ -48,10 +47,9 @@ def purge_synced_records(dry_run: bool = True, limit: int | None = None) -> dict
     the remaining links, so chunked runs resume naturally.
     """
     by_object = {S.salesforce_object: S for S in SYNCERS}
-    deleter = DeletionSyncRunner()
     links = frappe.get_all(
         "Salesforce Record Link",
-        fields=["salesforce_id", "salesforce_object", "frappe_doctype", "frappe_name"],
+        fields=["name", "salesforce_object", "frappe_doctype", "frappe_name"],
     )
 
     counts: dict[str, int] = {}
@@ -65,8 +63,16 @@ def purge_synced_records(dry_run: bool = True, limit: int | None = None) -> dict
         counts[link.frappe_doctype] = counts.get(link.frappe_doctype, 0) + 1
         if dry_run:
             continue
-        deleter._delete_frappe_doc(link.salesforce_id, syncer)
-        deleted += 1
+        try:
+            _force_delete(link)
+            deleted += 1
+        except Exception:
+            frappe.db.rollback()
+            frappe.log_error(
+                title=f"SF purge {link.frappe_doctype} {link.frappe_name}",
+                message=frappe.get_traceback(),
+            )
+            continue
         if deleted % 100 == 0:
             frappe.db.commit()
         if limit and deleted >= limit:
@@ -80,6 +86,27 @@ def purge_synced_records(dry_run: bool = True, limit: int | None = None) -> dict
         "deleted": deleted,
         "total": sum(counts.values()),
     }
+
+
+def _force_delete(link) -> None:
+    """Delete a sync-created doc and its Salesforce Record Link.
+
+    ``force=True`` bypasses Frappe's link checks — necessary because the
+    Salesforce Record Link *dynamically links* the target doc (so a plain delete
+    raises ``LinkExistsError``), and because the synced docs cross-reference each
+    other (CRM Deal -> Contact, dynamic Org links, Addresses). Appropriate for a
+    full purge, which wipes the whole synced set before re-importing.
+    ``delete_permanently=True`` skips the Deleted Document trail for a clean wipe.
+    """
+    if link.frappe_name and frappe.db.exists(link.frappe_doctype, link.frappe_name):
+        frappe.delete_doc(
+            link.frappe_doctype,
+            link.frappe_name,
+            force=True,
+            ignore_permissions=True,
+            delete_permanently=True,
+        )
+    frappe.delete_doc("Salesforce Record Link", link.name, ignore_permissions=True)
 
 
 def kept_parent_ids(client: SalesforceClient, spec: dict) -> set[str]:
