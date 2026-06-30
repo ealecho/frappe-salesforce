@@ -1,4 +1,4 @@
-"""Tests for the retention KEEP predicate builders (pure SOQL strings)."""
+"""Tests for the retention KEEP specs (pure SOQL strings / specs)."""
 
 from frappe_salesforce.sync import retention
 
@@ -9,40 +9,44 @@ def test_windows_are_five_and_ten_years():
     assert retention.DONATION_WINDOW == "LAST_N_DAYS:3650"
 
 
-def test_account_keep_covers_all_four_rules():
-    w = retention.account_keep_where()
-    assert "LastActivityDate >= LAST_N_DAYS:1825" in w           # 5y activity
-    assert "npe01__LastDonationDate__c >= LAST_N_DAYS:3650" in w  # 10y donation
-    assert "SELECT AccountId FROM Opportunity WHERE IsClosed = false" in w  # active grant
-    assert "Campaign.CreatedDate >= LAST_N_DAYS:1825" in w        # recent campaign
-    # OR-combined, each term parenthesised
-    assert w.count(" OR ") == 3
-    assert w.startswith("(")
+def test_account_scalar_keep_is_pure_scalar_or():
+    spec = retention.ACCOUNT_KEEP
+    assert spec["object"] == "Account"
+    w = spec["scalar_where"]
+    assert "LastActivityDate >= LAST_N_DAYS:1825" in w
+    assert "npe01__LastDonationDate__c >= LAST_N_DAYS:3650" in w
+    # Scalar OR only — no semi-join in the OR'd predicate (SF forbids that mix).
+    assert "SELECT" not in w
 
 
-def test_contact_uses_contact_specific_rollup_field():
-    w = retention.contact_keep_where()
-    # Contact rollup API name differs from Account's (extra underscores).
-    assert "npe01__Last_Donation_Date__c >= LAST_N_DAYS:3650" in w
-    assert "npe01__LastDonationDate__c" not in w
-    assert "SELECT ContactId FROM Opportunity" in w
+def test_account_lookup_rules_collect_accountid():
+    rules = retention.ACCOUNT_KEEP["lookup_rules"]
+    assert ("Opportunity", "AccountId", "IsClosed = false") in rules
+    assert ("Opportunity", "AccountId", retention.RECENT_CAMPAIGN) in rules
 
 
-def test_opportunity_keep_is_active_won_or_campaign():
+def test_contact_uses_contact_specific_rollup_and_contactid():
+    spec = retention.CONTACT_KEEP
+    assert "npe01__Last_Donation_Date__c >= LAST_N_DAYS:3650" in spec["scalar_where"]
+    assert "npe01__LastDonationDate__c" not in spec["scalar_where"]
+    assert all(lr[1] == "ContactId" for lr in spec["lookup_rules"])
+
+
+def test_opportunity_keep_is_scalar_or_no_semijoin():
     w = retention.opportunity_keep_where()
     assert "IsClosed = false" in w
     assert "IsWon = true AND CloseDate >= LAST_N_DAYS:3650" in w
     assert "Campaign.CreatedDate >= LAST_N_DAYS:1825" in w
+    assert "SELECT" not in w  # all scalar -> safe to OR
 
 
-def test_keep_where_registry_maps_core_objects_only():
-    assert set(retention.KEEP_WHERE) == {"Account", "Contact", "Opportunity"}
-    # builders are callable and return non-empty predicates
-    for builder in retention.KEEP_WHERE.values():
-        assert builder().strip()
+def test_parent_keep_registry_covers_account_and_contact():
+    assert set(retention.PARENT_KEEP) == {"Account", "Contact"}
+    for spec in retention.PARENT_KEEP.values():
+        assert spec["scalar_where"] and spec["lookup_rules"]
 
 
-def test_active_grant_predicate_is_scalar_not_nested_semijoin():
-    # Leaf predicate must stay scalar: SF rejects a semi-join nested inside a
-    # semi-join, and ACTIVE_GRANT is used inside `Id IN (SELECT ...)`.
-    assert "SELECT" not in retention.ACTIVE_GRANT
+def test_recent_campaign_uses_parent_traversal_not_semijoin():
+    # Parent-field traversal (Campaign.CreatedDate) is allowed in OR; a
+    # semi-join would not be.
+    assert retention.RECENT_CAMPAIGN == "Campaign.CreatedDate >= LAST_N_DAYS:1825"

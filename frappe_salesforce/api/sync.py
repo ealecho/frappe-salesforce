@@ -331,17 +331,20 @@ def retention_backfill_report():
     frappe.only_for("System Manager")
     from frappe_salesforce.salesforce.client import SalesforceClient
     from frappe_salesforce.sync import retention
+    from frappe_salesforce.tasks.retention_backfill import kept_parent_ids
 
     client = SalesforceClient(bypass_budget=True)
     out: dict[str, Any] = {}
-    for obj, builder in (
-        ("Account", retention.account_keep_where),
-        ("Contact", retention.contact_keep_where),
-        ("Opportunity", retention.opportunity_keep_where),
-    ):
+    # Account / Contact: KEEP is a UNION of separate queries (SF forbids
+    # OR-combining semi-joins), so count distinct kept Ids rather than COUNT().
+    for obj in ("Account", "Contact"):
         total = _count(client, obj)
-        keep = _count(client, obj, builder())
+        keep = len(kept_parent_ids(client, retention.PARENT_KEEP[obj]))
         out[obj] = {"total": total, "keep": keep, "drop": total - keep}
+    # Opportunity: scalar predicate, COUNT() works directly.
+    opp_total = _count(client, "Opportunity")
+    opp_keep = _count(client, "Opportunity", retention.opportunity_keep_where())
+    out["Opportunity"] = {"total": opp_total, "keep": opp_keep, "drop": opp_total - opp_keep}
     return out
 
 

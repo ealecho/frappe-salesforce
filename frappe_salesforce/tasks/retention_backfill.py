@@ -64,26 +64,71 @@ def purge_synced_records(dry_run: bool = True) -> dict:
     return {"dry_run": dry_run, "by_doctype": counts, "total": sum(counts.values())}
 
 
+def kept_parent_ids(client: SalesforceClient, spec: dict) -> set[str]:
+    """Union the KEEP Ids for a parent object (Account/Contact).
+
+    Salesforce forbids OR-combining semi-joins, so each rule is its own query:
+    one scalar query on the parent, plus one per lookup rule on the child
+    (collecting the parent lookup Id). See ``sync/retention.py``.
+    """
+    ids: set[str] = set()
+    for rec in client.query(
+        f"SELECT Id FROM {spec['object']} WHERE {spec['scalar_where']}"
+    ):
+        if rec.get("Id"):
+            ids.add(rec["Id"])
+    for child_object, lookup_field, where in spec["lookup_rules"]:
+        for rec in client.query(
+            f"SELECT {lookup_field} FROM {child_object} WHERE {where}"
+        ):
+            value = rec.get(lookup_field)
+            if value:
+                ids.add(value)
+    return ids
+
+
 def run_retention_backfill(limit: int | None = None) -> dict:
-    """Import only records matching the KEEP predicates, in dependency order."""
+    """Import only records matching the KEEP rules, in dependency order."""
     client = SalesforceClient()
     summary: dict[str, int] = {}
+    by_object = {S.salesforce_object: S for S in SYNCERS}
 
-    for syncer_cls in SYNCERS:
-        builder = retention.KEEP_WHERE.get(syncer_cls.salesforce_object)
-        if builder is None:
-            continue  # activities + User handled separately / skipped
-        syncer = syncer_cls(client, frappe._dict())
-        soql = build_incremental_query(
-            sobject=syncer_cls.salesforce_object,
-            fields=syncer._soql_fields(),
-            since=EPOCH,
-            extra_where=builder(),
-        )
-        summary[syncer_cls.salesforce_object] = _import_query(syncer, client, soql, limit)
+    # Account / Contact: union the kept Ids (scalar + opportunity-derived rules),
+    # then import those parents by Id (semi-joins can't be OR-combined inline).
+    for obj in ("Account", "Contact"):
+        syncer = by_object[obj](client, frappe._dict())
+        ids = sorted(kept_parent_ids(client, retention.PARENT_KEEP[obj]))
+        summary[obj] = _import_by_ids(syncer, client, obj, ids, limit)
+
+    # Opportunity: single predicate query (all scalar terms -> OR is allowed).
+    opp = by_object["Opportunity"](client, frappe._dict())
+    opp_soql = build_incremental_query(
+        sobject="Opportunity",
+        fields=opp._soql_fields(),
+        since=EPOCH,
+        extra_where=retention.opportunity_keep_where(),
+    )
+    summary["Opportunity"] = _import_query(opp, client, opp_soql, limit)
 
     summary.update(_backfill_activities(client, limit))
     return summary
+
+
+def _import_by_ids(syncer, client, sobject, ids, limit) -> int:
+    """Import ``sobject`` records for the given SF Ids, in batches of 200."""
+    fields = syncer._soql_fields()
+    imported = 0
+    for start in range(0, len(ids), _ID_BATCH):
+        batch = ids[start : start + _ID_BATCH]
+        id_list = ", ".join(f"'{i}'" for i in batch)
+        soql = build_incremental_query(
+            sobject=sobject, fields=fields, since=EPOCH, extra_where=f"Id IN ({id_list})"
+        )
+        remaining = None if limit is None else max(0, limit - imported)
+        imported += _import_query(syncer, client, soql, remaining)
+        if limit and imported >= limit:
+            break
+    return imported
 
 
 def _backfill_activities(client: SalesforceClient, limit: int | None) -> dict:

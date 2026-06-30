@@ -1,7 +1,7 @@
-"""SOQL predicate builders for the one-time retention backfill.
+"""Retention KEEP specifications for the one-time selective backfill.
 
-Pure string builders (no Frappe / network) so they're unit-testable. Consumed
-by ``tasks/retention_backfill.py`` (the selective import) and
+Pure data/string builders (no Frappe / network) so they're unit-testable.
+Consumed by ``tasks/retention_backfill.py`` (import) and
 ``api/sync.retention_backfill_report`` (dry-run counts).
 
 Retention policy — KEEP a contact/organisation when ANY of:
@@ -9,24 +9,28 @@ Retention policy — KEEP a contact/organisation when ANY of:
   * it is linked to a donation on a campaign created in the past 5 years;
   * it has an active grant;
   * it gave a donation in the past 10 years.
-Everything else is simply not imported (that is how the "REMOVE inactive >5y
-unless they have a donation" rule is satisfied — by exclusion).
+Everything else is simply not imported (that satisfies "REMOVE inactive >5y
+unless they have a donation" by exclusion).
 
-Org-specific interpretation
----------------------------
-This org has no clean scalar flag separating a "grant" from a "donation"
-Opportunity (confirmed during discovery — only opaque ``Type``/``RecordTypeId``
-text, or the structural presence of ``Income_year__c`` children). Rather than
-depend on that, the predicates use neutral signals that capture the policy
-intent and are valid, un-nested SOQL:
-  * "active grant"   -> an OPEN opportunity (``IsClosed = false``)
-  * "donation given" -> the NPSP last-donation-date rollup on the Account/Contact
-  * "campaign-linked"-> any opportunity whose Campaign was created recently
+Why this is split into a scalar predicate + lookup rules
+--------------------------------------------------------
+Salesforce **forbids combining a semi-join (`Id IN (SELECT ...)`) with `OR`**
+(`MALFORMED_QUERY: Semi join sub-selects are not allowed with the 'OR'
+operator`). So a parent's KEEP set is computed as a UNION of separate queries:
 
-If strict grant-only / donation-only semantics are wanted later, set
-``ACTIVE_GRANT`` to a grant-period rule and add an ``IS_DONATION`` scalar once the
-RecordType/Type values are confirmed (Phase 0 probe). Keep leaf predicates
-SCALAR — Salesforce rejects a semi-join nested inside another semi-join.
+  * ``scalar_where`` — the rules expressible as plain fields on the parent
+    (activity recency + donation rollup); scalar ``OR`` is allowed, so these run
+    as one query returning parent Ids.
+  * ``lookup_rules`` — the rules that depend on related Opportunities (active
+    grant, recent campaign); each runs as its own child query, and we collect
+    the parent lookup Id (``AccountId`` / ``ContactId``) from the results.
+
+The runner unions the Ids from all of these, then imports those parents.
+
+Org-specific interpretation (neutral signals, no grant/donation discriminator):
+  * "active grant"    -> an OPEN opportunity (``ACTIVE_GRANT``)
+  * "donation given"  -> the NPSP last-donation-date rollup on the parent
+  * "campaign-linked" -> any opportunity whose Campaign was created recently
 """
 
 from __future__ import annotations
@@ -40,57 +44,53 @@ CAMPAIGN_WINDOW = "LAST_N_DAYS:1825"  # 5 years
 #: period rule if preferred, e.g. "npsp__Grant_Period_End_Date__c >= TODAY".
 ACTIVE_GRANT = "IsClosed = false"
 
+#: Opportunities whose parent should be kept due to a recently-created campaign.
+RECENT_CAMPAIGN = f"Campaign.CreatedDate >= {CAMPAIGN_WINDOW}"
 
-def _or(*clauses: str) -> str:
-    """OR-join clauses, each parenthesised so precedence is unambiguous."""
-    return " OR ".join(f"({c})" for c in clauses)
+#: KEEP spec per parent object. ``scalar_where`` is one query on the parent;
+#: ``lookup_rules`` are (child_object, parent_lookup_field, child_where) tuples
+#: each run separately, contributing the parent Ids they reference.
+ACCOUNT_KEEP = {
+    "object": "Account",
+    "scalar_where": (
+        f"LastActivityDate >= {ACTIVITY_WINDOW} "
+        f"OR npe01__LastDonationDate__c >= {DONATION_WINDOW}"
+    ),
+    "lookup_rules": [
+        ("Opportunity", "AccountId", ACTIVE_GRANT),
+        ("Opportunity", "AccountId", RECENT_CAMPAIGN),
+    ],
+}
 
+CONTACT_KEEP = {
+    "object": "Contact",
+    # NB the Contact rollup API name differs from the Account's.
+    "scalar_where": (
+        f"LastActivityDate >= {ACTIVITY_WINDOW} "
+        f"OR npe01__Last_Donation_Date__c >= {DONATION_WINDOW}"
+    ),
+    "lookup_rules": [
+        ("Opportunity", "ContactId", ACTIVE_GRANT),
+        ("Opportunity", "ContactId", RECENT_CAMPAIGN),
+    ],
+}
 
-def account_keep_where() -> str:
-    """KEEP predicate for the Account (CRM Organization) query."""
-    return _or(
-        f"LastActivityDate >= {ACTIVITY_WINDOW}",
-        f"npe01__LastDonationDate__c >= {DONATION_WINDOW}",
-        f"Id IN (SELECT AccountId FROM Opportunity WHERE {ACTIVE_GRANT})",
-        f"Id IN (SELECT AccountId FROM Opportunity "
-        f"WHERE Campaign.CreatedDate >= {CAMPAIGN_WINDOW})",
-    )
-
-
-def contact_keep_where() -> str:
-    """KEEP predicate for the Contact query.
-
-    NB the Contact rollup field is ``npe01__Last_Donation_Date__c`` (note the
-    extra underscores vs the Account field ``npe01__LastDonationDate__c``).
-    """
-    return _or(
-        f"LastActivityDate >= {ACTIVITY_WINDOW}",
-        f"npe01__Last_Donation_Date__c >= {DONATION_WINDOW}",
-        f"Id IN (SELECT ContactId FROM Opportunity WHERE {ACTIVE_GRANT})",
-        f"Id IN (SELECT ContactId FROM Opportunity "
-        f"WHERE Campaign.CreatedDate >= {CAMPAIGN_WINDOW})",
-    )
+#: Parent KEEP specs keyed by salesforce_object (consumed by the runner/report).
+PARENT_KEEP = {"Account": ACCOUNT_KEEP, "Contact": CONTACT_KEEP}
 
 
 def opportunity_keep_where() -> str:
     """KEEP predicate for the Opportunity (CRM Deal) query.
 
-    Imports the materially relevant deals of kept parties: active grants, gifts
-    received in the past 10 years, and anything on a recently-created campaign.
+    All scalar / parent-field terms, so OR-combining is allowed (no semi-join).
+    Imports active grants, gifts received in the past 10 years, and anything on
+    a recently-created campaign.
     """
-    return _or(
-        ACTIVE_GRANT,
-        f"IsWon = true AND CloseDate >= {DONATION_WINDOW}",
-        f"Campaign.CreatedDate >= {CAMPAIGN_WINDOW}",
+    return " OR ".join(
+        f"({c})"
+        for c in (
+            ACTIVE_GRANT,
+            f"IsWon = true AND CloseDate >= {DONATION_WINDOW}",
+            RECENT_CAMPAIGN,
+        )
     )
-
-
-#: salesforce_object -> KEEP predicate builder. Objects absent here (Task,
-#: Event, User) are not selected by a self-predicate: activities are imported
-#: by linkage to kept records (see tasks/retention_backfill), and the link-only
-#: User syncer creates no docs.
-KEEP_WHERE = {
-    "Account": account_keep_where,
-    "Contact": contact_keep_where,
-    "Opportunity": opportunity_keep_where,
-}
