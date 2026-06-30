@@ -47,6 +47,11 @@ ACTIVE_GRANT = "IsClosed = false"
 #: Opportunities whose parent should be kept due to a recently-created campaign.
 RECENT_CAMPAIGN = f"Campaign.CreatedDate >= {CAMPAIGN_WINDOW}"
 
+#: A donation received in the retention window — a won opportunity. Used both to
+#: keep the deal AND (as a lookup rule) to keep its donor org/contact, so a kept
+#: donation never imports without its corresponding parent.
+DONATION_RECEIVED = f"IsWon = true AND CloseDate >= {DONATION_WINDOW}"
+
 #: KEEP spec per parent object. ``scalar_where`` is one query on the parent;
 #: ``lookup_rules`` are (child_object, parent_lookup_field, child_where) tuples
 #: each run separately, contributing the parent Ids they reference.
@@ -58,6 +63,7 @@ ACCOUNT_KEEP = {
     ),
     "lookup_rules": [
         ("Opportunity", "AccountId", ACTIVE_GRANT),
+        ("Opportunity", "AccountId", DONATION_RECEIVED),
         ("Opportunity", "AccountId", RECENT_CAMPAIGN),
     ],
 }
@@ -71,6 +77,7 @@ CONTACT_KEEP = {
     ),
     "lookup_rules": [
         ("Opportunity", "ContactId", ACTIVE_GRANT),
+        ("Opportunity", "ContactId", DONATION_RECEIVED),
         ("Opportunity", "ContactId", RECENT_CAMPAIGN),
     ],
 }
@@ -87,10 +94,5 @@ def opportunity_keep_where() -> str:
     a recently-created campaign.
     """
     return " OR ".join(
-        f"({c})"
-        for c in (
-            ACTIVE_GRANT,
-            f"IsWon = true AND CloseDate >= {DONATION_WINDOW}",
-            RECENT_CAMPAIGN,
-        )
+        f"({c})" for c in (ACTIVE_GRANT, DONATION_RECEIVED, RECENT_CAMPAIGN)
     )

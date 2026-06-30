@@ -23,6 +23,17 @@ def test_account_lookup_rules_collect_accountid():
     rules = retention.ACCOUNT_KEEP["lookup_rules"]
     assert ("Opportunity", "AccountId", "IsClosed = false") in rules
     assert ("Opportunity", "AccountId", retention.RECENT_CAMPAIGN) in rules
+    # Donors are kept via the actual won opportunity (not just the NPSP rollup),
+    # so a kept donation never imports without its parent org.
+    assert ("Opportunity", "AccountId", retention.DONATION_RECEIVED) in rules
+
+
+def test_donation_received_is_shared_between_keep_and_lookup():
+    # The donor lookup rule and the opportunity self-keep use the SAME predicate
+    # so they can't drift apart.
+    assert retention.DONATION_RECEIVED in retention.opportunity_keep_where()
+    for spec in retention.PARENT_KEEP.values():
+        assert any(r[2] == retention.DONATION_RECEIVED for r in spec["lookup_rules"])
 
 
 def test_contact_uses_contact_specific_rollup_and_contactid():
