@@ -30,6 +30,12 @@ from frappe_salesforce.tasks.deletion import DeletionSyncRunner
 EPOCH = "1970-01-01 00:00:00"
 _ID_BATCH = 200
 
+#: Only objects the retention backfill re-imports may be purged. Crucially this
+#: EXCLUDES Lead: the policy has no Lead KEEP rule, so the backfill never brings
+#: leads back — purging them would delete the incoming pipeline for good. (User
+#: is link-only and already skipped.)
+PURGE_OBJECTS = {"Account", "Contact", "Opportunity", "Task", "Event"}
+
 
 def purge_synced_records(dry_run: bool = True) -> dict:
     """Delete CRM records created by the sync, per ``Salesforce Record Link``.
@@ -51,6 +57,8 @@ def purge_synced_records(dry_run: bool = True) -> dict:
         syncer = by_object.get(link.salesforce_object)
         if syncer is None or syncer.link_only:
             continue  # unknown object or link-only (User) -> never delete
+        if link.salesforce_object not in PURGE_OBJECTS:
+            continue  # e.g. Lead — not re-imported, so never purged
         counts[link.frappe_doctype] = counts.get(link.frappe_doctype, 0) + 1
         if dry_run:
             continue
