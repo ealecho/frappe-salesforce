@@ -53,6 +53,7 @@ def purge_synced_records(dry_run: bool = True, limit: int | None = None) -> dict
     )
 
     counts: dict[str, int] = {}
+    deleted_counts: dict[str, int] = {}
     deleted = 0
     for link in links:
         syncer = by_object.get(link.salesforce_object)
@@ -66,6 +67,7 @@ def purge_synced_records(dry_run: bool = True, limit: int | None = None) -> dict
         try:
             _force_delete(link)
             deleted += 1
+            deleted_counts[link.frappe_doctype] = deleted_counts.get(link.frappe_doctype, 0) + 1
         except Exception:
             frappe.db.rollback()
             frappe.log_error(
@@ -83,9 +85,22 @@ def purge_synced_records(dry_run: bool = True, limit: int | None = None) -> dict
     return {
         "dry_run": dry_run,
         "by_doctype": counts,
+        "deleted_by_doctype": deleted_counts,
         "deleted": deleted,
         "total": sum(counts.values()),
     }
+
+
+def run_purge_with_log(limit: int | None = None) -> str:
+    """``purge_synced_records(dry_run=False, ...)``, tracked on a Retention Log.
+
+    The ``frappe.enqueue`` target for the destructive purge — see
+    ``api/sync.py::purge_synced_data``. Dry-run stays a direct synchronous
+    call (it's just COUNT()s, no log needed).
+    """
+    from frappe_salesforce.tasks.retention_log import run_with_log
+
+    return run_with_log("Purge", purge_synced_records, dry_run=False, limit=limit)
 
 
 def _force_delete(link) -> None:
@@ -133,9 +148,15 @@ def kept_parent_ids(client: SalesforceClient, spec: dict) -> set[str]:
 
 
 def run_retention_backfill(limit: int | None = None) -> dict:
-    """Import only records matching the KEEP rules, in dependency order."""
+    """Import only records matching the KEEP rules, in dependency order.
+
+    Returns ``{object: {"imported": N, "failed": M}}`` for every object —
+    a consistent shape across Account/Contact/Opportunity/Task/Event so
+    callers (see ``tasks/retention_log.py``) can report real partial-failure
+    counts rather than just a success count.
+    """
     client = SalesforceClient()
-    summary: dict[str, int] = {}
+    summary: dict[str, dict] = {}
     by_object = {S.salesforce_object: S for S in SYNCERS}
 
     # Account / Contact: union the kept Ids (scalar + opportunity-derived rules),
@@ -143,7 +164,8 @@ def run_retention_backfill(limit: int | None = None) -> dict:
     for obj in ("Account", "Contact"):
         syncer = by_object[obj](client, frappe._dict())
         ids = sorted(kept_parent_ids(client, retention.PARENT_KEEP[obj]))
-        summary[obj] = _import_by_ids(syncer, client, obj, ids, limit)
+        imported, failed = _import_by_ids(syncer, client, obj, ids, limit)
+        summary[obj] = {"imported": imported, "failed": failed}
 
     # Opportunity: single predicate query (all scalar terms -> OR is allowed).
     opp = by_object["Opportunity"](client, frappe._dict())
@@ -153,16 +175,29 @@ def run_retention_backfill(limit: int | None = None) -> dict:
         since=EPOCH,
         extra_where=retention.opportunity_keep_where(),
     )
-    summary["Opportunity"] = _import_query(opp, client, opp_soql, limit)
+    opp_imported, opp_failed = _import_query(opp, client, opp_soql, limit)
+    summary["Opportunity"] = {"imported": opp_imported, "failed": opp_failed}
 
     summary.update(_backfill_activities(client, limit))
     return summary
 
 
-def _import_by_ids(syncer, client, sobject, ids, limit) -> int:
+def run_backfill_with_log(limit: int | None = None) -> str:
+    """``run_retention_backfill(...)``, tracked on a Retention Log.
+
+    The ``frappe.enqueue`` target for the backfill — see
+    ``api/sync.py::start_retention_backfill``.
+    """
+    from frappe_salesforce.tasks.retention_log import run_with_log
+
+    return run_with_log("Backfill", run_retention_backfill, limit=limit)
+
+
+def _import_by_ids(syncer, client, sobject, ids, limit) -> tuple[int, int]:
     """Import ``sobject`` records for the given SF Ids, in batches of 200."""
     fields = syncer._soql_fields()
     imported = 0
+    failed = 0
     for start in range(0, len(ids), _ID_BATCH):
         batch = ids[start : start + _ID_BATCH]
         id_list = ", ".join(f"'{i}'" for i in batch)
@@ -170,10 +205,12 @@ def _import_by_ids(syncer, client, sobject, ids, limit) -> int:
             sobject=sobject, fields=fields, since=EPOCH, extra_where=f"Id IN ({id_list})"
         )
         remaining = None if limit is None else max(0, limit - imported)
-        imported += _import_query(syncer, client, soql, remaining)
+        batch_imported, batch_failed = _import_query(syncer, client, soql, remaining)
+        imported += batch_imported
+        failed += batch_failed
         if limit and imported >= limit:
             break
-    return imported
+    return imported, failed
 
 
 def _backfill_activities(client: SalesforceClient, limit: int | None) -> dict:
@@ -192,7 +229,7 @@ def _backfill_activities(client: SalesforceClient, limit: int | None) -> dict:
         )
         if row.salesforce_id
     ]
-    out: dict[str, int] = {}
+    out: dict[str, dict] = {}
     if not kept_ids:
         return out
 
@@ -203,6 +240,7 @@ def _backfill_activities(client: SalesforceClient, limit: int | None) -> dict:
         fields = syncer._soql_fields()
         seen: set[str] = set()
         imported = 0
+        failed = 0
         for start in range(0, len(kept_ids), _ID_BATCH):
             batch = kept_ids[start : start + _ID_BATCH]
             id_list = ", ".join(f"'{i}'" for i in batch)
@@ -213,16 +251,23 @@ def _backfill_activities(client: SalesforceClient, limit: int | None) -> dict:
                 since=EPOCH,
                 extra_where=where,
             )
-            imported += _import_query(syncer, client, soql, limit, seen=seen)
+            batch_imported, batch_failed = _import_query(syncer, client, soql, limit, seen=seen)
+            imported += batch_imported
+            failed += batch_failed
             if limit and imported >= limit:
                 break
-        out[syncer_cls.salesforce_object] = imported
+        out[syncer_cls.salesforce_object] = {"imported": imported, "failed": failed}
     return out
 
 
-def _import_query(syncer, client, soql, limit, seen=None) -> int:
-    """Run one retention SOQL query, upserting each record. Returns count."""
+def _import_query(syncer, client, soql, limit, seen=None) -> tuple[int, int]:
+    """Run one retention SOQL query, upserting each record.
+
+    Returns ``(imported, failed)`` so callers can report real partial-failure
+    counts (see ``tasks/retention_log.py``) instead of just a success count.
+    """
     imported = 0
+    failed = 0
     for rec in client.query(soql):
         sf_id = rec.get("Id")
         if seen is not None:
@@ -239,6 +284,7 @@ def _import_query(syncer, client, soql, limit, seen=None) -> int:
                 title=f"Retention backfill {syncer.salesforce_object} {sf_id}",
                 message=frappe.get_traceback(),
             )
+            failed += 1
         if limit and imported >= limit:
             break
-    return imported
+    return imported, failed

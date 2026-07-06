@@ -354,8 +354,10 @@ def purge_synced_data(dry_run: str = "true", limit: int | None = None):
 
     ``dry_run`` defaults to "true" (counts only). Pass ``dry_run=false`` to
     actually delete — enqueued on the long queue because of volume and the
-    other apps' delete hooks. Only sync-created records are touched. ``limit``
-    caps deletions for a chunked run.
+    other apps' delete hooks, tracked on a ``Salesforce Retention Log``
+    (status Running -> Success / Partial / Failed; see
+    ``tasks/retention_log.py``). Only sync-created records are touched.
+    ``limit`` caps deletions for a chunked run.
     """
     frappe.only_for("System Manager")
     from frappe_salesforce.tasks.retention_backfill import purge_synced_records
@@ -366,11 +368,10 @@ def purge_synced_data(dry_run: str = "true", limit: int | None = None):
     if dry:
         return purge_synced_records(dry_run=True, limit=limit)
     frappe.enqueue(
-        "frappe_salesforce.tasks.retention_backfill.purge_synced_records",
+        "frappe_salesforce.tasks.retention_backfill.run_purge_with_log",
         queue="long",
         timeout=36000,
         job_name="salesforce_purge_synced_records",
-        dry_run=False,
         limit=limit,
     )
     return {"queued": True, "job": "salesforce_purge_synced_records"}
@@ -378,12 +379,16 @@ def purge_synced_data(dry_run: str = "true", limit: int | None = None):
 
 @frappe.whitelist()
 def start_retention_backfill(limit: int | None = None):
-    """Import only records matching the retention KEEP rules. Enqueued."""
+    """Import only records matching the retention KEEP rules. Enqueued.
+
+    Tracked on a ``Salesforce Retention Log`` (status Running -> Success /
+    Partial / Failed) — see ``tasks/retention_log.py``.
+    """
     frappe.only_for("System Manager")
     if limit is not None:
         limit = int(limit)
     frappe.enqueue(
-        "frappe_salesforce.tasks.retention_backfill.run_retention_backfill",
+        "frappe_salesforce.tasks.retention_backfill.run_backfill_with_log",
         queue="long",
         timeout=36000,
         job_name="salesforce_retention_backfill",
