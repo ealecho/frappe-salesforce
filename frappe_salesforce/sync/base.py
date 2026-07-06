@@ -219,7 +219,29 @@ class BaseSyncer:
             }
         )
         self._merge_table_payloads(doc, table_payloads)
-        doc.insert(ignore_permissions=True)
+        try:
+            doc.insert(ignore_permissions=True)
+        except frappe.DuplicateEntryError:
+            # Autoname derives the docname straight from a display field
+            # (e.g. CRM Organization from its name) with no de-dup
+            # suffixing, so two genuinely distinct SF records that happen
+            # to share that display value collide on insert. Disambiguate
+            # the docname with the SF Id rather than dropping the record —
+            # future syncs still resolve it correctly via
+            # ``custom_salesforce_id``, not the name.
+            original_name = doc.name
+            doc = frappe.get_doc(
+                {
+                    "doctype": self.frappe_doctype,
+                    "custom_salesforce_id": sf_id,
+                    **values,
+                }
+            )
+            self._merge_table_payloads(doc, table_payloads)
+            doc.insert(
+                ignore_permissions=True,
+                set_name=f"{original_name} ({sf_id[-6:]})",
+            )
         link.frappe_name = doc.name
         link.frappe_doctype = self.frappe_doctype
         self.log.created = (self.log.created or 0) + 1

@@ -567,13 +567,19 @@ def phone_table(payload: Any) -> list[dict] | None:
         val = payload.get(sf_field)
         if not val:
             continue
-        num = str(val).strip()
-        if not num or num in seen:
-            continue
-        seen.add(num)
-        row = {"phone": num}
-        row.update(flags)
-        rows.append(row)
+        # A handful of SF records cram two numbers into one field
+        # (e.g. "+256 718093205 / +260 961110246") — split on the common
+        # separators rather than passing the combined garbage through,
+        # which Frappe's phone validator rejects wholesale.
+        parts = [p.strip() for p in re.split(r"[/,;]", str(val)) if p.strip()]
+        for i, num in enumerate(parts):
+            if num in seen:
+                continue
+            seen.add(num)
+            row = {"phone": num}
+            if i == 0:
+                row.update(flags)
+            rows.append(row)
     return rows or None
 
 
