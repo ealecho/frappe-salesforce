@@ -17,6 +17,47 @@ from .transforms import apply_transform
 #: so a crash mid-run doesn't force reprocessing the whole page next tick.
 HWM_CHECKPOINT_EVERY = 50
 
+#: TEMPORARY STOPGAP — exact error strings from known bugs in *other* apps'
+#: CRM Deal ``on_update`` hooks that otherwise kill the whole deal save.
+#: Currently: frappe_grants_budgeting's on_crm_deal_update -> Grant.validate
+#: throws if an auto-created "Restricted" grant has no Operating Country,
+#: unrelated to whether the synced deal itself is valid (~57% of retention
+#: backfill Opportunities hit this on 2026-07-06). Remove once that's fixed
+#: upstream — track in frappe_grants_budgeting, not here.
+_TOLERATED_HOOK_VALIDATION_SNIPPETS = (
+    "Restricted grants must have at least one Operating Country",
+)
+
+
+def _persist_tolerating_known_hook_bugs(fn) -> None:
+    """Run a ``doc.save()``/``doc.insert()`` call, swallowing only the exact
+    known third-party ``on_update`` hook bugs above.
+
+    Frappe writes the actual row *before* running ``on_update`` hooks (see
+    ``run_post_save_methods``), so the record ``fn`` was persisting is
+    already saved by the time a hook further down the chain throws — only
+    that hook's own side effect is lost. Anything not matching the known
+    snippets re-raises unchanged; a real validation failure on our own
+    mapped fields must still fail loudly.
+    """
+    try:
+        fn()
+    except frappe.ValidationError as e:
+        message = str(e)
+        if not any(s in message for s in _TOLERATED_HOOK_VALIDATION_SNIPPETS):
+            raise
+        frappe.log_error(
+            title="SF sync: tolerated known on_update hook bug (record still saved)",
+            message=(
+                f"{message}\n\n"
+                "Known bug in another app's CRM Deal on_update hook, "
+                "unrelated to this record's own validity — see "
+                "_TOLERATED_HOOK_VALIDATION_SNIPPETS in sync/base.py. The "
+                "record itself was still persisted; only the third-party "
+                "side effect failed."
+            ),
+        )
+
 #: Tolerate this many consecutive 401s inside the SOQL pagination loop
 #: before aborting the syncer. The client already does one transparent
 #: refresh-and-retry per call; consecutive 401s here mean the refreshed
@@ -193,7 +234,7 @@ class BaseSyncer:
             doc.update(values)
             doc.custom_salesforce_id = sf_id
             self._merge_table_payloads(doc, table_payloads)
-            doc.save(ignore_permissions=True)
+            _persist_tolerating_known_hook_bugs(lambda: doc.save(ignore_permissions=True))
             self.log.updated = (self.log.updated or 0) + 1
             return doc
 
@@ -205,7 +246,7 @@ class BaseSyncer:
             doc = frappe.get_doc(self.frappe_doctype, existing)
             doc.update(values)
             self._merge_table_payloads(doc, table_payloads)
-            doc.save(ignore_permissions=True)
+            _persist_tolerating_known_hook_bugs(lambda: doc.save(ignore_permissions=True))
             link.frappe_name = existing
             link.frappe_doctype = self.frappe_doctype
             self.log.updated = (self.log.updated or 0) + 1
@@ -220,7 +261,7 @@ class BaseSyncer:
         )
         self._merge_table_payloads(doc, table_payloads)
         try:
-            doc.insert(ignore_permissions=True)
+            _persist_tolerating_known_hook_bugs(lambda: doc.insert(ignore_permissions=True))
         except frappe.DuplicateEntryError:
             # Autoname derives the docname straight from a display field
             # (e.g. CRM Organization from its name) with no de-dup
@@ -238,9 +279,11 @@ class BaseSyncer:
                 }
             )
             self._merge_table_payloads(doc, table_payloads)
-            doc.insert(
-                ignore_permissions=True,
-                set_name=f"{original_name} ({sf_id[-6:]})",
+            _persist_tolerating_known_hook_bugs(
+                lambda: doc.insert(
+                    ignore_permissions=True,
+                    set_name=f"{original_name} ({sf_id[-6:]})",
+                )
             )
         link.frappe_name = doc.name
         link.frappe_doctype = self.frappe_doctype
