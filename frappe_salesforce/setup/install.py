@@ -43,7 +43,7 @@ def after_install() -> None:
 
 
 def after_migrate() -> None:
-    """Self-heal default field mappings on every ``bench migrate``.
+    """Self-heal default field mappings + PEAS deal statuses on every migrate.
 
     Unlike ``after_install`` (fresh installs only) and the one-shot
     ``extend_default_mappings`` patch (Frappe runs each patch exactly once,
@@ -58,11 +58,17 @@ def after_migrate() -> None:
     guard; the per-sync path (``IncrementalSyncRunner.run``) still validates
     before each run.
 
+    ``ensure_peas_deal_statuses`` is likewise idempotent/convergent (see
+    ``setup/deal_statuses.py``), so re-running it here means a site whose
+    ``CRM Deal Status`` probabilities drifted from spec — whether never
+    seeded, or reset by some other process — self-corrects on the next
+    deploy, without a manual console fix.
+
     Any failure is logged and swallowed: this hook runs in the shared
     ``after_migrate`` phase of ``bench migrate``, so an exception here would
-    abort migration for *every* app on the bench. A mapping-seed problem
-    must never have that blast radius — it is rolled back and recorded to
-    the Error Log for follow-up instead.
+    abort migration for *every* app on the bench. A seed problem must never
+    have that blast radius — it is rolled back and recorded to the Error Log
+    for follow-up instead.
     """
     try:
         ensure_default_field_mappings(validate=False)
@@ -71,6 +77,15 @@ def after_migrate() -> None:
         frappe.db.rollback()
         frappe.log_error(
             title="frappe_salesforce after_migrate: mapping seed failed",
+            message=frappe.get_traceback(),
+        )
+    try:
+        ensure_peas_deal_statuses()
+        frappe.db.commit()
+    except Exception:
+        frappe.db.rollback()
+        frappe.log_error(
+            title="frappe_salesforce after_migrate: deal status seed failed",
             message=frappe.get_traceback(),
         )
 
