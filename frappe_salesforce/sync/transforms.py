@@ -572,6 +572,11 @@ def phone_table(payload: Any) -> list[dict] | None:
         # separators rather than passing the combined garbage through,
         # which Frappe's phone validator rejects wholesale.
         parts = [p.strip() for p in re.split(r"[/,;]", str(val)) if p.strip()]
+        # Some "phone" fields actually hold a URL (e.g. a WhatsApp link),
+        # which splitting on "/" shreds into non-numeric fragments like
+        # "https:" — drop anything with no digits at all rather than feed
+        # it to Frappe's phone validator.
+        parts = [p for p in parts if any(ch.isdigit() for ch in p)]
         for i, num in enumerate(parts):
             if num in seen:
                 continue
