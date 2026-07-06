@@ -43,26 +43,25 @@ def after_install() -> None:
 
 
 def after_migrate() -> None:
-    """Self-heal default field mappings + PEAS deal statuses on every migrate.
+    """Self-heal custom fields + default field mappings + PEAS deal statuses
+    on every migrate.
 
-    Unlike ``after_install`` (fresh installs only) and the one-shot
-    ``extend_default_mappings`` patch (Frappe runs each patch exactly once,
-    so it can't re-seed a site whose ``Salesforce Field Mapping`` records
-    were never created or were later deleted), this runs on *every*
-    migrate. ``ensure_default_field_mappings`` is additive and idempotent:
-    it creates any missing object mapping, appends missing default rows,
-    and never removes admin customisations — so a deploy + migrate always
-    converges a site to a complete set of mappings.
+    Unlike ``after_install`` (fresh installs only) and one-shot patches
+    (Frappe runs each patch exactly once, so it can't re-seed a site whose
+    records were never created, failed partway, or were later deleted /
+    reset by something else), this runs on *every* migrate. Each of
+    ``ensure_all_custom_fields``, ``ensure_default_field_mappings``, and
+    ``ensure_peas_deal_statuses`` is additive/idempotent — safe to re-run —
+    so a deploy + migrate always converges a site back to spec regardless
+    of how it drifted. (Case in point: ``custom_grant_budget`` on CRM Deal
+    — its one-shot patch ran successfully on 2026-06-27 per Patch Log, but
+    the field was missing again on 2026-07-06 with no other explanation on
+    hand; self-healing here means that class of drift no longer needs a
+    manual console fix to notice or recover from.)
 
-    ``validate=False`` so a migrate can never be aborted by the readiness
-    guard; the per-sync path (``IncrementalSyncRunner.run``) still validates
-    before each run.
-
-    ``ensure_peas_deal_statuses`` is likewise idempotent/convergent (see
-    ``setup/deal_statuses.py``), so re-running it here means a site whose
-    ``CRM Deal Status`` probabilities drifted from spec — whether never
-    seeded, or reset by some other process — self-corrects on the next
-    deploy, without a manual console fix.
+    ``ensure_default_field_mappings`` uses ``validate=False`` so a migrate
+    can never be aborted by the readiness guard; the per-sync path
+    (``IncrementalSyncRunner.run``) still validates before each run.
 
     Any failure is logged and swallowed: this hook runs in the shared
     ``after_migrate`` phase of ``bench migrate``, so an exception here would
@@ -70,6 +69,15 @@ def after_migrate() -> None:
     have that blast radius — it is rolled back and recorded to the Error Log
     for follow-up instead.
     """
+    try:
+        ensure_all_custom_fields()
+        frappe.db.commit()
+    except Exception:
+        frappe.db.rollback()
+        frappe.log_error(
+            title="frappe_salesforce after_migrate: custom field seed failed",
+            message=frappe.get_traceback(),
+        )
     try:
         ensure_default_field_mappings(validate=False)
         frappe.db.commit()
