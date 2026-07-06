@@ -1,6 +1,6 @@
 # Frappe Salesforce
 
-One-way Salesforce → Frappe CRM integration using SOQL over the Salesforce REST API.
+One-way Salesforce → Frappe CRM Integration using SOQL over the Salesforce REST API.
 
 ## Features
 
