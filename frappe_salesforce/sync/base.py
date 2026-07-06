@@ -19,13 +19,20 @@ HWM_CHECKPOINT_EVERY = 50
 
 #: TEMPORARY STOPGAP — exact error strings from known bugs in *other* apps'
 #: CRM Deal ``on_update`` hooks that otherwise kill the whole deal save.
-#: Currently: frappe_grants_budgeting's on_crm_deal_update -> Grant.validate
-#: throws if an auto-created "Restricted" grant has no Operating Country,
-#: unrelated to whether the synced deal itself is valid (~57% of retention
-#: backfill Opportunities hit this on 2026-07-06). Remove once that's fixed
-#: upstream — track in frappe_grants_budgeting, not here.
-_TOLERATED_HOOK_VALIDATION_SNIPPETS = (
+#: Both are in frappe_grants_budgeting's ``on_crm_deal_update`` ->
+#: ``_create_grant_from_deal``, unrelated to whether the synced deal itself
+#: is valid (~57% of retention backfill Opportunities hit the first one on
+#: 2026-07-06):
+#:   1. ``Grant.validate_operating_countries`` throws if an auto-created
+#:      "Restricted" grant has no Operating Country (ValidationError).
+#:   2. ``deal.deal_name`` — CRM Deal has no such field at all; its
+#:      title_field is "organization" (AttributeError).
+#: A fix for both is up at erpchampions/frappe_grants_budgeting branch
+#: fix/grant-operating-countries-from-budget. Remove this stopgap once
+#: that's merged and deployed — track it there, not here.
+_TOLERATED_HOOK_BUG_SNIPPETS = (
     "Restricted grants must have at least one Operating Country",
+    "'CRMDeal' object has no attribute 'deal_name'",
 )
 
 
@@ -37,14 +44,14 @@ def _persist_tolerating_known_hook_bugs(fn) -> None:
     ``run_post_save_methods``), so the record ``fn`` was persisting is
     already saved by the time a hook further down the chain throws — only
     that hook's own side effect is lost. Anything not matching the known
-    snippets re-raises unchanged; a real validation failure on our own
-    mapped fields must still fail loudly.
+    snippets re-raises unchanged; a real validation failure (or a genuine
+    bug of ours) must still fail loudly.
     """
     try:
         fn()
-    except frappe.ValidationError as e:
+    except (frappe.ValidationError, AttributeError) as e:
         message = str(e)
-        if not any(s in message for s in _TOLERATED_HOOK_VALIDATION_SNIPPETS):
+        if not any(s in message for s in _TOLERATED_HOOK_BUG_SNIPPETS):
             raise
         frappe.log_error(
             title="SF sync: tolerated known on_update hook bug (record still saved)",
@@ -52,9 +59,9 @@ def _persist_tolerating_known_hook_bugs(fn) -> None:
                 f"{message}\n\n"
                 "Known bug in another app's CRM Deal on_update hook, "
                 "unrelated to this record's own validity — see "
-                "_TOLERATED_HOOK_VALIDATION_SNIPPETS in sync/base.py. The "
-                "record itself was still persisted; only the third-party "
-                "side effect failed."
+                "_TOLERATED_HOOK_BUG_SNIPPETS in sync/base.py. The record "
+                "itself was still persisted; only the third-party side "
+                "effect failed."
             ),
         )
 
