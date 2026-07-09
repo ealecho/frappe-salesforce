@@ -61,14 +61,17 @@ def purge_synced_records(dry_run: bool = True, limit: int | None = None) -> dict
             continue  # unknown object or link-only (User) -> never delete
         if link.salesforce_object not in PURGE_OBJECTS:
             continue  # e.g. Lead — not re-imported, so never purged
+        # Break before counting so a limited run doesn't tally a link it
+        # never deletes — _build_items computes failed = total - deleted,
+        # so counting the at-the-limit link would surface one phantom
+        # failure and mark the log "Partial". Guarded on ``not dry_run``
+        # so dry-run counting stays exhaustive; ``is not None`` so limit=0
+        # ("delete nothing") isn't treated as "no limit".
+        if not dry_run and limit is not None and deleted >= limit:
+            break
         counts[link.frappe_doctype] = counts.get(link.frappe_doctype, 0) + 1
         if dry_run:
             continue
-        # Checked before deleting (not ``if limit`` after, which would
-        # treat limit=0 — a legitimate "delete nothing" — as falsy/"no
-        # limit" and purge everything instead).
-        if limit is not None and deleted >= limit:
-            break
         try:
             _force_delete(link)
             deleted += 1
