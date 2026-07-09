@@ -372,14 +372,22 @@ def purge_synced_data(dry_run: str = "true", limit: int | None = None):
     dry = str(dry_run).lower() != "false"
     if dry:
         return purge_synced_records(dry_run=True, limit=limit)
+    # Claim (reap stale + guard against concurrent runs + create the
+    # Running log) happens synchronously HERE, not in the worker — so a
+    # double-click's second request sees the log immediately instead of
+    # racing through the queue-latency window. See retention_log.claim_run.
+    from frappe_salesforce.tasks.retention_log import claim_run
+
+    log_name = claim_run("Purge")
     frappe.enqueue(
         "frappe_salesforce.tasks.retention_backfill.run_purge_with_log",
         queue="long",
         timeout=36000,
         job_name="salesforce_purge_synced_records",
         limit=limit,
+        log_name=log_name,
     )
-    return {"queued": True, "job": "salesforce_purge_synced_records"}
+    return {"queued": True, "job": "salesforce_purge_synced_records", "log": log_name}
 
 
 @frappe.whitelist(methods=["POST"])
@@ -394,14 +402,19 @@ def start_retention_backfill(limit: int | None = None):
     frappe.only_for("System Manager")
     if limit is not None:
         limit = int(limit)
+    # Synchronous claim — see purge_synced_data for why.
+    from frappe_salesforce.tasks.retention_log import claim_run
+
+    log_name = claim_run("Backfill")
     frappe.enqueue(
         "frappe_salesforce.tasks.retention_backfill.run_backfill_with_log",
         queue="long",
         timeout=36000,
         job_name="salesforce_retention_backfill",
         limit=limit,
+        log_name=log_name,
     )
-    return {"queued": True, "job": "salesforce_retention_backfill"}
+    return {"queued": True, "job": "salesforce_retention_backfill", "log": log_name}
 
 
 @frappe.whitelist(methods=["POST"])
