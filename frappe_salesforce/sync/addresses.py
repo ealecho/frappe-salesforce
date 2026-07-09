@@ -33,6 +33,31 @@ PREFIX_TO_TYPE = {
     "": "Primary",
 }
 
+#: Some SF records use a UK constituent country, informal name, or
+#: alternate form in the Country field rather than Frappe's ISO
+#: ``Country`` doctype entry, which fails ``LinkValidationError`` on
+#: insert. Normalise the common ones (found via retention backfill error
+#: log analysis: US/USA and "The Netherlands" alongside the UK synonyms).
+COUNTRY_SYNONYMS = {
+    "uk": "United Kingdom",
+    "wales": "United Kingdom",
+    "scotland": "United Kingdom",
+    "england": "United Kingdom",
+    "northern ireland": "United Kingdom",
+    "great britain": "United Kingdom",
+    "us": "United States",
+    "usa": "United States",
+    "u.s.a.": "United States",
+    "u.s.": "United States",
+    "the netherlands": "Netherlands",
+}
+
+
+def _normalise_country(country: Any) -> Any:
+    if not isinstance(country, str):
+        return country
+    return COUNTRY_SYNONYMS.get(country.strip().lower(), country)
+
 
 def upsert_address_for_record(
     parent_doctype: str,
@@ -61,10 +86,13 @@ def upsert_address_for_record(
         "address_title": title,
         "address_type": address_type,
         "address_line1": block.get("Street") or "(none)",
-        "city": block.get("City"),
+        # ``city`` is mandatory on Address; a fair number of SF records
+        # have every other field but this one, so fall back like Street
+        # rather than failing the whole insert.
+        "city": block.get("City") or "(none)",
         "state": block.get("State"),
         "pincode": block.get("PostalCode"),
-        "country": block.get("Country"),
+        "country": _normalise_country(block.get("Country")),
     }
     # Strip None to avoid clobbering preset values.
     payload = {k: v for k, v in payload.items() if v is not None}

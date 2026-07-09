@@ -179,5 +179,116 @@ frappe.ui.form.on("Salesforce Settings", {
                 __("Reset High-Water Marks")
             );
         }, __("Danger Zone"));
+
+        frm.add_custom_button(__("Retention Report"), () => {
+            frappe.call({
+                method: "frappe_salesforce.api.sync.retention_backfill_report",
+                freeze: true,
+                freeze_message: __("Counting Salesforce records..."),
+                callback: (r) => {
+                    if (!r.message) return;
+                    const rows = Object.entries(r.message)
+                        .map(([obj, c]) => `<tr><td>${obj}</td><td>${c.total}</td><td>${c.keep}</td><td>${c.drop}</td></tr>`)
+                        .join("");
+                    frappe.msgprint({
+                        title: __("Retention Report"),
+                        message: `
+                            <table class="table table-bordered">
+                                <tr><th>Object</th><th>Total</th><th>Keep</th><th>Drop</th></tr>
+                                ${rows}
+                            </table>
+                        `,
+                        indicator: "blue",
+                        wide: true,
+                    });
+                },
+            });
+        }, __("Retention"));
+
+        frm.add_custom_button(__("Dedup Contacts (Report)"), () => {
+            frappe.call({
+                method: "frappe_salesforce.api.sync.dedup_contacts",
+                args: { dry_run: "true" },
+                freeze: true,
+                freeze_message: __("Scanning Contacts for duplicates..."),
+                callback: (r) => {
+                    if (!r.message) return;
+                    const m = r.message;
+                    // Contact fields are Salesforce-sourced strings — escape
+                    // before interpolating into HTML (frappe.msgprint), same
+                    // as any other untrusted external data.
+                    const esc = frappe.utils.escape_html;
+                    const sample = (m.sample || [])
+                        .map((s) => `<li>${esc(s.first)} ${esc(s.last)} &lt;${esc(s.email)}&gt; — ${esc((s.names || []).join(", "))}</li>`)
+                        .join("");
+                    frappe.msgprint({
+                        title: __("Dedup Report (dry run — no changes made)"),
+                        message: `
+                            <p><b>${m.duplicate_groups}</b> duplicate group(s),
+                            <b>${m.records_to_merge}</b> record(s) would be merged.</p>
+                            <ul>${sample}</ul>
+                        `,
+                        indicator: "blue",
+                        wide: true,
+                    });
+                },
+            });
+        }, __("Retention"));
+
+        frm.add_custom_button(__("Start Retention Backfill"), () => {
+            frappe.confirm(
+                __(
+                    "This re-imports only the records matching the retention " +
+                    "policy (see sync/retention.py). It runs as a background " +
+                    "job — safe to close this page — and can take a while " +
+                    "plus consume significant API quota. Progress and final " +
+                    "status (Success / Partial / Failed) are recorded on " +
+                    "Salesforce Retention Log.\n\n" +
+                    "Continue?"
+                ),
+                () => {
+                    frappe.call({
+                        method: "frappe_salesforce.api.sync.start_retention_backfill",
+                        callback: () => {
+                            frappe.show_alert({
+                                message: __(
+                                    "Backfill queued — track progress in {0}.",
+                                    [`<a href="/app/salesforce-retention-log">${__("Salesforce Retention Log")}</a>`]
+                                ),
+                                indicator: "blue",
+                            });
+                        },
+                    });
+                }
+            );
+        }, __("Retention"));
+
+        frm.add_custom_button(__("Purge Synced Data"), () => {
+            const warning = __(
+                "This PERMANENTLY deletes every CRM record the Salesforce " +
+                "sync created (Account/Contact/Opportunity/Task/Event), " +
+                "tracked via Salesforce Record Link. Manually-entered CRM " +
+                "data is never touched. This is meant to precede a " +
+                "'Start Retention Backfill' run and cannot be undone. " +
+                "It runs as a background job; final status (Success / " +
+                "Partial / Failed) is recorded on Salesforce Retention Log.\n\n" +
+                "Are you absolutely sure?"
+            );
+            frappe.confirm(warning, () => {
+                frappe.call({
+                    method: "frappe_salesforce.api.sync.purge_synced_data",
+                    args: { dry_run: "false" },
+                    callback: () => {
+                        frappe.show_alert({
+                            message: __(
+                                "Purge queued — track progress in {0}.",
+                                [`<a href="/app/salesforce-retention-log">${__("Salesforce Retention Log")}</a>`]
+                            ),
+                            indicator: "orange",
+                        });
+                    },
+                });
+            });
+        }, __("Danger Zone"));
     },
 });

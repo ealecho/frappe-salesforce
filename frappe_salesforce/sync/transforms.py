@@ -554,7 +554,7 @@ def phone_table(payload: Any) -> list[dict] | None:
     if not isinstance(payload, dict):
         return None
     rows: list[dict] = []
-    seen: set[str] = set()
+    by_phone: dict[str, dict] = {}
     field_flags = {
         "Phone": {"is_primary_phone": 1},
         "MobilePhone": {"is_primary_mobile_no": 1},
@@ -567,13 +567,31 @@ def phone_table(payload: Any) -> list[dict] | None:
         val = payload.get(sf_field)
         if not val:
             continue
-        num = str(val).strip()
-        if not num or num in seen:
-            continue
-        seen.add(num)
-        row = {"phone": num}
-        row.update(flags)
-        rows.append(row)
+        # A handful of SF records cram two numbers into one field
+        # (e.g. "+256 718093205 / +260 961110246") — split on the common
+        # separators rather than passing the combined garbage through,
+        # which Frappe's phone validator rejects wholesale.
+        parts = [p.strip() for p in re.split(r"[/,;]", str(val)) if p.strip()]
+        # Some "phone" fields actually hold a URL (e.g. a WhatsApp link),
+        # which splitting on "/" shreds into fragments — a bare "contains a
+        # digit" check still lets things like "send?phone=1234567" through
+        # (a query string fragment, still fails Frappe's phone validator),
+        # so require the whole fragment to look phone-shaped instead.
+        parts = [p for p in parts if re.fullmatch(r"[\d\s+().-]+", p) and any(ch.isdigit() for ch in p)]
+        for i, num in enumerate(parts):
+            # Phone/MobilePhone are frequently identical for an individual
+            # contact — merge flags into the existing row instead of
+            # dropping the duplicate outright, so e.g. is_primary_mobile_no
+            # doesn't silently vanish just because Phone was processed first.
+            if num in by_phone:
+                if i == 0:
+                    by_phone[num].update(flags)
+                continue
+            row = {"phone": num}
+            if i == 0:
+                row.update(flags)
+            by_phone[num] = row
+            rows.append(row)
     return rows or None
 
 

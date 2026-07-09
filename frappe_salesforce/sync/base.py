@@ -17,6 +17,54 @@ from .transforms import apply_transform
 #: so a crash mid-run doesn't force reprocessing the whole page next tick.
 HWM_CHECKPOINT_EVERY = 50
 
+#: TEMPORARY STOPGAP — exact error strings from known bugs in *other* apps'
+#: CRM Deal ``on_update`` hooks that otherwise kill the whole deal save.
+#: Both are in frappe_grants_budgeting's ``on_crm_deal_update`` ->
+#: ``_create_grant_from_deal``, unrelated to whether the synced deal itself
+#: is valid (~57% of retention backfill Opportunities hit the first one on
+#: 2026-07-06):
+#:   1. ``Grant.validate_operating_countries`` throws if an auto-created
+#:      "Restricted" grant has no Operating Country (ValidationError).
+#:   2. ``deal.deal_name`` — CRM Deal has no such field at all; its
+#:      title_field is "organization" (AttributeError).
+#: A fix for both is up at erpchampions/frappe_grants_budgeting branch
+#: fix/grant-operating-countries-from-budget. Remove this stopgap once
+#: that's merged and deployed — track it there, not here.
+_TOLERATED_HOOK_BUG_SNIPPETS = (
+    "Restricted grants must have at least one Operating Country",
+    "'CRMDeal' object has no attribute 'deal_name'",
+)
+
+
+def _persist_tolerating_known_hook_bugs(fn) -> None:
+    """Run a ``doc.save()``/``doc.insert()`` call, swallowing only the exact
+    known third-party ``on_update`` hook bugs above.
+
+    Frappe writes the actual row *before* running ``on_update`` hooks (see
+    ``run_post_save_methods``), so the record ``fn`` was persisting is
+    already saved by the time a hook further down the chain throws — only
+    that hook's own side effect is lost. Anything not matching the known
+    snippets re-raises unchanged; a real validation failure (or a genuine
+    bug of ours) must still fail loudly.
+    """
+    try:
+        fn()
+    except (frappe.ValidationError, AttributeError) as e:
+        message = str(e)
+        if not any(s in message for s in _TOLERATED_HOOK_BUG_SNIPPETS):
+            raise
+        frappe.log_error(
+            title="SF sync: tolerated known on_update hook bug (record still saved)",
+            message=(
+                f"{message}\n\n"
+                "Known bug in another app's CRM Deal on_update hook, "
+                "unrelated to this record's own validity — see "
+                "_TOLERATED_HOOK_BUG_SNIPPETS in sync/base.py. The record "
+                "itself was still persisted; only the third-party side "
+                "effect failed."
+            ),
+        )
+
 #: Tolerate this many consecutive 401s inside the SOQL pagination loop
 #: before aborting the syncer. The client already does one transparent
 #: refresh-and-retry per call; consecutive 401s here mean the refreshed
@@ -193,7 +241,7 @@ class BaseSyncer:
             doc.update(values)
             doc.custom_salesforce_id = sf_id
             self._merge_table_payloads(doc, table_payloads)
-            doc.save(ignore_permissions=True)
+            _persist_tolerating_known_hook_bugs(lambda: doc.save(ignore_permissions=True))
             self.log.updated = (self.log.updated or 0) + 1
             return doc
 
@@ -205,7 +253,7 @@ class BaseSyncer:
             doc = frappe.get_doc(self.frappe_doctype, existing)
             doc.update(values)
             self._merge_table_payloads(doc, table_payloads)
-            doc.save(ignore_permissions=True)
+            _persist_tolerating_known_hook_bugs(lambda: doc.save(ignore_permissions=True))
             link.frappe_name = existing
             link.frappe_doctype = self.frappe_doctype
             self.log.updated = (self.log.updated or 0) + 1
@@ -219,7 +267,31 @@ class BaseSyncer:
             }
         )
         self._merge_table_payloads(doc, table_payloads)
-        doc.insert(ignore_permissions=True)
+        try:
+            _persist_tolerating_known_hook_bugs(lambda: doc.insert(ignore_permissions=True))
+        except frappe.DuplicateEntryError:
+            # Autoname derives the docname straight from a display field
+            # (e.g. CRM Organization from its name) with no de-dup
+            # suffixing, so two genuinely distinct SF records that happen
+            # to share that display value collide on insert. Disambiguate
+            # the docname with the SF Id rather than dropping the record —
+            # future syncs still resolve it correctly via
+            # ``custom_salesforce_id``, not the name.
+            original_name = doc.name
+            doc = frappe.get_doc(
+                {
+                    "doctype": self.frappe_doctype,
+                    "custom_salesforce_id": sf_id,
+                    **values,
+                }
+            )
+            self._merge_table_payloads(doc, table_payloads)
+            _persist_tolerating_known_hook_bugs(
+                lambda: doc.insert(
+                    ignore_permissions=True,
+                    set_name=f"{original_name} ({sf_id[-6:]})",
+                )
+            )
         link.frappe_name = doc.name
         link.frappe_doctype = self.frappe_doctype
         self.log.created = (self.log.created or 0) + 1
