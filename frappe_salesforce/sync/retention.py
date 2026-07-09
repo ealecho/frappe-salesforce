@@ -6,7 +6,9 @@ Consumed by ``tasks/retention_backfill.py`` (import) and
 
 Retention policy — KEEP a contact/organisation when ANY of:
   * it has had any activity in the past 5 years;
-  * it is linked to a donation on a campaign created in the past 5 years;
+  * it is linked to ANY opportunity (open, lost, or won) whose campaign was
+    created in the past 5 years — not donation-restricted, see
+    ``RECENT_CAMPAIGN`` below;
   * it has an active grant;
   * it gave a donation in the past 10 years.
 Everything else is simply not imported (that satisfies "REMOVE inactive >5y
