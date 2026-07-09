@@ -490,6 +490,16 @@ class BaseSyncer:
             return value
         if len(value) <= max_length:
             return value
+        # Over-length URLs are almost always base URLs bloated by tracking
+        # query params (gclid, gad_*, utm_*, ...) — dropping the query
+        # string yields a *better* value than truncating mid-URL, and
+        # usually fits. Only fall through to blunt truncation if the bare
+        # URL is still too long.
+        if "://" in value and "?" in value:
+            stripped = value.split("?", 1)[0]
+            if len(stripped) <= max_length:
+                return stripped
+            value = stripped
         # Log once per (doctype, field) — repeated truncation is a config
         # smell that deserves operator attention.
         flag_key = f"_truncated_{self.frappe_doctype}_{frappe_field}"
@@ -502,8 +512,9 @@ class BaseSyncer:
                 message=(
                     f"Salesforce value exceeds the {max_length}-char "
                     f"limit on {self.frappe_doctype}.{frappe_field}; "
-                    f"truncating. Consider widening the field to Small "
-                    f"Text / Long Text in setup/custom_fields.py.\n\n"
+                    f"truncating. If this is a custom_sf_* field, widen it "
+                    f"to Small Text / Long Text in setup/custom_fields.py; "
+                    f"standard CRM fields need a Property Setter instead.\n\n"
                     f"First offending SF Id: {sf_id or '?'}\n"
                     f"Length: {len(value)}\n"
                     f"Sample: {value[:200]!r}..."
