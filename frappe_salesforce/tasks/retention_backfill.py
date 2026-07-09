@@ -11,11 +11,19 @@ what the retention policy keeps" operation:
   incremental tick stays selective-friendly afterwards — it won't replay the
   excluded history).
 
-Both are invoked via the whitelisted wrappers in ``api/sync.py`` and are meant
-to be enqueued on the long queue.
+Both are invoked via the whitelisted wrappers in ``api/sync.py``. The
+background execution model is **chunked**: ``run_purge_with_log`` /
+``run_backfill_with_log`` process one bounded slice per RQ job, record
+progress on the ``Salesforce Retention Log``, then enqueue their own
+continuation at the back of the long queue — so a multi-hour run doesn't
+monopolise a worker (other queued jobs interleave between chunks), a
+deploy's worker restart only loses the in-flight chunk, and the log shows
+live per-object progress instead of appearing hung.
 """
 
 from __future__ import annotations
+
+import json
 
 import frappe
 
@@ -29,6 +37,16 @@ from frappe_salesforce.sync.registry import SYNCERS
 EPOCH = "1970-01-01 00:00:00"
 _ID_BATCH = 200
 
+#: Records processed per background chunk before the job re-enqueues its
+#: continuation and frees the worker. 200 keeps a chunk to a few minutes
+#: even for Opportunities (whose after_upsert fetches child grids).
+CHUNK_SIZE = 200
+CHUNK_QUEUE = "long"
+CHUNK_TIMEOUT = 3600
+
+#: Import order for the chunked backfill (dependencies first).
+BACKFILL_PHASES = ("Account", "Contact", "Opportunity", "Task", "Event")
+
 #: Only objects the retention backfill re-imports may be purged. Crucially this
 #: EXCLUDES Lead: the policy has no Lead KEEP rule, so the backfill never brings
 #: leads back — purging them would delete the incoming pipeline for good. (User
@@ -36,42 +54,54 @@ _ID_BATCH = 200
 PURGE_OBJECTS = {"Account", "Contact", "Opportunity", "Task", "Event"}
 
 
-def purge_synced_records(dry_run: bool = True, limit: int | None = None) -> dict:
+def purge_synced_records(
+    dry_run: bool = True,
+    limit: int | None = None,
+    skip_names: list[str] | None = None,
+) -> dict:
     """Delete CRM records created by the sync, per ``Salesforce Record Link``.
 
     Skips link-only objects (e.g. User — we never delete Users) and objects not
     re-imported (Lead). HWMs are NOT reset: leaving them at their current value
     keeps the post-purge incremental tick from replaying the excluded history.
-    ``dry_run`` only counts. ``limit`` caps deletions per call so the purge can
-    be run inline in chunks (re-run until ``deleted`` is 0); each call re-reads
-    the remaining links, so chunked runs resume naturally.
+    ``dry_run`` only counts. ``limit`` caps *attempted* links per call (not
+    just successful deletes — a call must stay bounded even when every
+    remaining link is failing) so the purge can run in chunks; each call
+    re-reads the remaining links, so chunked runs resume naturally.
+    ``skip_names`` (Salesforce Record Link names) are ignored entirely —
+    the chunked runner passes links that already failed in an earlier chunk
+    so they aren't retried and re-counted every chunk.
     """
     by_object = {S.salesforce_object: S for S in SYNCERS}
     links = frappe.get_all(
         "Salesforce Record Link",
         fields=["name", "salesforce_object", "frappe_doctype", "frappe_name"],
     )
+    skip = set(skip_names or ())
 
     counts: dict[str, int] = {}
     deleted_counts: dict[str, int] = {}
+    failed_by_doctype: dict[str, list[str]] = {}
     deleted = 0
+    attempted = 0
     for link in links:
         syncer = by_object.get(link.salesforce_object)
         if syncer is None or syncer.link_only:
             continue  # unknown object or link-only (User) -> never delete
         if link.salesforce_object not in PURGE_OBJECTS:
             continue  # e.g. Lead — not re-imported, so never purged
+        if link.name in skip:
+            continue  # failed in an earlier chunk — don't retry / recount
         # Break before counting so a limited run doesn't tally a link it
-        # never deletes — _build_items computes failed = total - deleted,
-        # so counting the at-the-limit link would surface one phantom
-        # failure and mark the log "Partial". Guarded on ``not dry_run``
-        # so dry-run counting stays exhaustive; ``is not None`` so limit=0
-        # ("delete nothing") isn't treated as "no limit".
-        if not dry_run and limit is not None and deleted >= limit:
+        # never processes. Guarded on ``not dry_run`` so dry-run counting
+        # stays exhaustive; ``is not None`` so limit=0 ("do nothing")
+        # isn't treated as "no limit".
+        if not dry_run and limit is not None and attempted >= limit:
             break
         counts[link.frappe_doctype] = counts.get(link.frappe_doctype, 0) + 1
         if dry_run:
             continue
+        attempted += 1
         try:
             _force_delete(link)
             deleted += 1
@@ -89,6 +119,7 @@ def purge_synced_records(dry_run: bool = True, limit: int | None = None) -> dict
                 title=f"SF purge {link.frappe_doctype} {link.frappe_name}",
                 message=frappe.get_traceback(),
             )
+            failed_by_doctype.setdefault(link.frappe_doctype, []).append(link.name)
             continue
     if not dry_run:
         frappe.db.commit()
@@ -97,21 +128,93 @@ def purge_synced_records(dry_run: bool = True, limit: int | None = None) -> dict
         "dry_run": dry_run,
         "by_doctype": counts,
         "deleted_by_doctype": deleted_counts,
+        "failed_by_doctype": failed_by_doctype,
         "deleted": deleted,
         "total": sum(counts.values()),
     }
 
 
-def run_purge_with_log(limit: int | None = None) -> str:
-    """``purge_synced_records(dry_run=False, ...)``, tracked on a Retention Log.
+def run_purge_with_log(limit: int | None = None, log_name: str | None = None) -> str:
+    """Chunked destructive purge, tracked on a Retention Log.
 
-    The ``frappe.enqueue`` target for the destructive purge — see
-    ``api/sync.py::purge_synced_data``. Dry-run stays a direct synchronous
-    call (it's just COUNT()s, no log needed).
+    The ``frappe.enqueue`` target for the purge — see
+    ``api/sync.py::purge_synced_data``, which claims the run and creates
+    the log synchronously (``log_name``) so the single-run guard has no
+    queue-latency race. Runs the first chunk in this job and lets
+    ``_run_purge_chunk`` re-enqueue continuations until nothing purgeable
+    remains. Dry-run stays a direct synchronous call (just COUNT()s).
     """
-    from frappe_salesforce.tasks.retention_log import run_with_log
+    from frappe_salesforce.tasks import retention_log
 
-    return run_with_log("Purge", purge_synced_records, dry_run=False, limit=limit)
+    if log_name is None:  # direct/console invocation
+        log_name = retention_log.create_log("Purge")
+    _run_purge_chunk(log_name=log_name, limit=limit, totals={}, failed_by_doctype={})
+    return log_name
+
+
+def _run_purge_chunk(
+    log_name: str,
+    limit: int | None,
+    totals: dict,
+    failed_by_doctype: dict | None = None,
+) -> None:
+    """Delete one bounded slice of links, then re-enqueue the continuation.
+
+    ``totals`` accumulates ``{doctype: {"count": deleted, "failed": n}}``
+    across chunks; ``failed_by_doctype`` carries the *identities* of links
+    that already failed (``{doctype: [link names]}``) so they are skipped —
+    not retried and re-counted — by every later chunk. Both travel through
+    the enqueue kwargs and are mirrored onto the log after every chunk.
+    ``purge_synced_records`` re-reads the remaining links on every call, so
+    continuation needs no cursor.
+    """
+    from frappe_salesforce.tasks import retention_log
+
+    failed_by_doctype = failed_by_doctype or {}
+    try:
+        total_deleted = sum(t.get("count", 0) for t in totals.values())
+        chunk_cap = (
+            CHUNK_SIZE if limit is None else min(CHUNK_SIZE, max(0, limit - total_deleted))
+        )
+        if chunk_cap == 0:
+            retention_log.finalize_log(log_name, totals)
+            return
+
+        skip = [name for names in failed_by_doctype.values() for name in names]
+        result = purge_synced_records(dry_run=False, limit=chunk_cap, skip_names=skip)
+
+        for doctype, names in result["failed_by_doctype"].items():
+            failed_by_doctype.setdefault(doctype, []).extend(names)
+        for doctype, n in result["deleted_by_doctype"].items():
+            totals.setdefault(doctype, {"count": 0, "failed": 0})["count"] += n
+        for doctype, names in failed_by_doctype.items():
+            # Absolute (not +=): failed identities are tracked exactly once.
+            totals.setdefault(doctype, {"count": 0, "failed": 0})["failed"] = len(names)
+        retention_log.update_progress(log_name, totals)
+
+        if result["total"] == 0:
+            # Nothing attempted: no purgeable links left beyond the
+            # known-failed set (which we don't retry) — we're done.
+            retention_log.finalize_log(log_name, totals)
+            return
+
+        frappe.enqueue(
+            "frappe_salesforce.tasks.retention_backfill._run_purge_chunk",
+            queue=CHUNK_QUEUE,
+            timeout=CHUNK_TIMEOUT,
+            job_name=f"salesforce_purge_chunk_{log_name}",
+            log_name=log_name,
+            limit=limit,
+            totals=totals,
+            failed_by_doctype=failed_by_doctype,
+        )
+    except Exception as e:
+        frappe.db.rollback()
+        frappe.log_error(
+            title=f"Salesforce Retention Log {log_name}: purge chunk failed",
+            message=frappe.get_traceback(),
+        )
+        retention_log.fail_log(log_name, str(e), totals)
 
 
 def _force_delete(link) -> None:
@@ -219,15 +322,139 @@ def run_retention_backfill(limit: int | None = None) -> dict:
     return summary
 
 
-def run_backfill_with_log(limit: int | None = None) -> str:
-    """``run_retention_backfill(...)``, tracked on a Retention Log.
+def run_backfill_with_log(limit: int | None = None, log_name: str | None = None) -> str:
+    """Chunked selective backfill, tracked on a Retention Log.
 
     The ``frappe.enqueue`` target for the backfill — see
-    ``api/sync.py::start_retention_backfill``.
+    ``api/sync.py::start_retention_backfill``, which claims the run and
+    creates the log synchronously (``log_name``) so the single-run guard
+    has no queue-latency race. Runs the first chunk in this job and lets
+    ``_run_backfill_chunk`` re-enqueue continuations phase by phase. Same
+    KEEP semantics and per-object ``limit`` contract as
+    ``run_retention_backfill`` (which remains the synchronous,
+    console-friendly single-shot variant).
     """
-    from frappe_salesforce.tasks.retention_log import run_with_log
+    from frappe_salesforce.tasks import retention_log
 
-    return run_with_log("Backfill", run_retention_backfill, limit=limit)
+    if log_name is None:  # direct/console invocation
+        log_name = retention_log.create_log("Backfill")
+    _run_backfill_chunk(
+        log_name=log_name, limit=limit, phase_idx=0, offset=0, totals={}
+    )
+    return log_name
+
+
+def _run_backfill_chunk(
+    log_name: str, limit: int | None, phase_idx: int, offset: int, totals: dict
+) -> None:
+    """Import one bounded slice, then re-enqueue the continuation.
+
+    State (phase index + offset into that phase's sorted KEEP-id list +
+    running totals) travels through the enqueue kwargs; the id lists are
+    cached per run (see ``_phase_ids``) so continuations don't recompute
+    the KEEP queries every chunk.
+    """
+    from frappe_salesforce.tasks import retention_log
+
+    try:
+        client = SalesforceClient()
+        by_object = {S.salesforce_object: S for S in SYNCERS}
+
+        while phase_idx < len(BACKFILL_PHASES):
+            phase = BACKFILL_PHASES[phase_idx]
+            ids = _phase_ids(client, phase, log_name)
+            t = totals.setdefault(phase, {"count": 0, "failed": 0})
+            remaining = None if limit is None else max(0, limit - t["count"])
+            if offset >= len(ids) or remaining == 0:
+                phase_idx += 1
+                offset = 0
+                continue
+
+            batch = ids[offset : offset + CHUNK_SIZE]
+            id_list = ", ".join(f"'{i}'" for i in batch)
+            syncer = by_object[phase](client, frappe._dict())
+            if phase in ("Task", "Event"):
+                # Activities are kept by linkage to a kept parent; the
+                # batch here is parent ids, not activity ids. An activity
+                # referencing parents in two different batches just gets
+                # upserted twice (idempotent).
+                extra_where = f"WhoId IN ({id_list}) OR WhatId IN ({id_list})"
+            else:
+                extra_where = f"Id IN ({id_list})"
+            soql = build_incremental_query(
+                sobject=phase,
+                fields=syncer._soql_fields(),
+                since=EPOCH,
+                extra_where=extra_where,
+            )
+            imported, failed = _import_query(syncer, client, soql, remaining)
+            t["count"] += imported
+            t["failed"] += failed
+            offset += CHUNK_SIZE
+            retention_log.update_progress(log_name, totals)
+
+            # Yield the worker: continuation goes to the back of the queue
+            # so other pending jobs get a turn between chunks.
+            frappe.enqueue(
+                "frappe_salesforce.tasks.retention_backfill._run_backfill_chunk",
+                queue=CHUNK_QUEUE,
+                timeout=CHUNK_TIMEOUT,
+                job_name=f"salesforce_backfill_chunk_{log_name}",
+                log_name=log_name,
+                limit=limit,
+                phase_idx=phase_idx,
+                offset=offset,
+                totals=totals,
+            )
+            return
+
+        retention_log.finalize_log(log_name, totals)
+    except Exception as e:
+        frappe.db.rollback()
+        frappe.log_error(
+            title=f"Salesforce Retention Log {log_name}: backfill chunk failed",
+            message=frappe.get_traceback(),
+        )
+        retention_log.fail_log(log_name, str(e), totals)
+
+
+def _phase_ids(client: SalesforceClient, phase: str, log_name: str) -> list[str]:
+    """Sorted SF ids this phase should import, cached per run.
+
+    Account/Contact: union of the KEEP rules (``kept_parent_ids``).
+    Opportunity: ids matching ``opportunity_keep_where()``.
+    Task/Event: the union of all three parent id sets — activities are
+    kept by linkage, matching ``run_retention_backfill``'s contract of
+    scoping to THIS run's KEEP set (not whatever links already exist).
+
+    Cached in Redis keyed by the log name so continuations don't redo the
+    KEEP queries every chunk; recomputed transparently if evicted.
+    """
+    cache_slot = "activities" if phase in ("Task", "Event") else phase
+    cache_key = f"sf_retention_ids:{log_name}:{cache_slot}"
+    cached = frappe.cache().get_value(cache_key)
+    if cached:
+        return json.loads(cached)
+
+    if phase in ("Account", "Contact"):
+        ids = sorted(kept_parent_ids(client, retention.PARENT_KEEP[phase]))
+    elif phase == "Opportunity":
+        ids = sorted(
+            rec["Id"]
+            for rec in client.query(
+                f"SELECT Id FROM Opportunity WHERE {retention.opportunity_keep_where()}"
+            )
+            if rec.get("Id")
+        )
+    else:
+        ids = sorted(
+            set(_phase_ids(client, "Account", log_name))
+            | set(_phase_ids(client, "Contact", log_name))
+            | set(_phase_ids(client, "Opportunity", log_name))
+        )
+
+    frappe.cache().set_value(cache_key, json.dumps(ids), expires_in_sec=6 * 3600)
+    return ids
 
 
 def _import_by_ids(syncer, client, sobject, ids, limit) -> tuple[int, int]:
