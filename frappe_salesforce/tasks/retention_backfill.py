@@ -64,6 +64,11 @@ def purge_synced_records(dry_run: bool = True, limit: int | None = None) -> dict
         counts[link.frappe_doctype] = counts.get(link.frappe_doctype, 0) + 1
         if dry_run:
             continue
+        # Checked before deleting (not ``if limit`` after, which would
+        # treat limit=0 — a legitimate "delete nothing" — as falsy/"no
+        # limit" and purge everything instead).
+        if limit is not None and deleted >= limit:
+            break
         try:
             _force_delete(link)
             deleted += 1
@@ -82,8 +87,6 @@ def purge_synced_records(dry_run: bool = True, limit: int | None = None) -> dict
                 message=frappe.get_traceback(),
             )
             continue
-        if limit and deleted >= limit:
-            break
     if not dry_run:
         frappe.db.commit()
 
@@ -163,27 +166,38 @@ def run_retention_backfill(limit: int | None = None) -> dict:
     client = SalesforceClient()
     summary: dict[str, dict] = {}
     by_object = {S.salesforce_object: S for S in SYNCERS}
+    # SF Ids actually targeted by this run's KEEP predicates, threaded into
+    # _backfill_activities below — NOT sourced from whatever Salesforce
+    # Record Link already has lying around, which would include anything
+    # from a prior sync if this run isn't immediately preceded by a purge
+    # (the two are separate steps/buttons now, not an enforced pair).
+    kept_sf_ids: list[str] = []
 
     # Account / Contact: union the kept Ids (scalar + opportunity-derived rules),
     # then import those parents by Id (semi-joins can't be OR-combined inline).
     for obj in ("Account", "Contact"):
         syncer = by_object[obj](client, frappe._dict())
         ids = sorted(kept_parent_ids(client, retention.PARENT_KEEP[obj]))
+        kept_sf_ids.extend(ids)
         imported, failed = _import_by_ids(syncer, client, obj, ids, limit)
         summary[obj] = {"imported": imported, "failed": failed}
 
     # Opportunity: single predicate query (all scalar terms -> OR is allowed).
     opp = by_object["Opportunity"](client, frappe._dict())
+    opp_where = retention.opportunity_keep_where()
+    kept_sf_ids.extend(
+        rec["Id"] for rec in client.query(f"SELECT Id FROM Opportunity WHERE {opp_where}") if rec.get("Id")
+    )
     opp_soql = build_incremental_query(
         sobject="Opportunity",
         fields=opp._soql_fields(),
         since=EPOCH,
-        extra_where=retention.opportunity_keep_where(),
+        extra_where=opp_where,
     )
     opp_imported, opp_failed = _import_query(opp, client, opp_soql, limit)
     summary["Opportunity"] = {"imported": opp_imported, "failed": opp_failed}
 
-    summary.update(_backfill_activities(client, limit))
+    summary.update(_backfill_activities(client, kept_sf_ids, limit))
     return summary
 
 
@@ -213,27 +227,20 @@ def _import_by_ids(syncer, client, sobject, ids, limit) -> tuple[int, int]:
         batch_imported, batch_failed = _import_query(syncer, client, soql, remaining)
         imported += batch_imported
         failed += batch_failed
-        if limit and imported >= limit:
+        if limit is not None and imported >= limit:
             break
     return imported, failed
 
 
-def _backfill_activities(client: SalesforceClient, limit: int | None) -> dict:
+def _backfill_activities(client: SalesforceClient, kept_ids: list[str], limit: int | None) -> dict:
     """Import Tasks/Events that point at a kept Account/Contact/Opportunity.
 
     Activities are engagement records, not retention targets, so they are kept
-    by linkage: we gather the SF ids we just imported and pull only activities
-    whose ``WhoId``/``WhatId`` references one of them.
+    by linkage: ``kept_ids`` are the SF Ids this run's KEEP predicates actually
+    targeted (passed in by ``run_retention_backfill``) — not queried from
+    ``Salesforce Record Link``, which could include parents from a prior sync
+    that this run never touched if it isn't immediately preceded by a purge.
     """
-    kept_ids = [
-        row.salesforce_id
-        for row in frappe.get_all(
-            "Salesforce Record Link",
-            filters={"salesforce_object": ["in", ["Account", "Contact", "Opportunity"]]},
-            fields=["salesforce_id"],
-        )
-        if row.salesforce_id
-    ]
     out: dict[str, dict] = {}
     if not kept_ids:
         return out
@@ -260,7 +267,7 @@ def _backfill_activities(client: SalesforceClient, limit: int | None) -> dict:
             batch_imported, batch_failed = _import_query(syncer, client, soql, remaining, seen=seen)
             imported += batch_imported
             failed += batch_failed
-            if limit and imported >= limit:
+            if limit is not None and imported >= limit:
                 break
         out[syncer_cls.salesforce_object] = {"imported": imported, "failed": failed}
     return out
@@ -274,6 +281,11 @@ def _import_query(syncer, client, soql, limit, seen=None) -> tuple[int, int]:
     """
     imported = 0
     failed = 0
+    # ``if limit`` (not ``is not None``) would treat limit=0 as falsy/"no
+    # limit" and import everything instead of nothing; check upfront so a
+    # zero limit never issues the query at all.
+    if limit is not None and imported >= limit:
+        return imported, failed
     for rec in client.query(soql):
         sf_id = rec.get("Id")
         if seen is not None:
@@ -291,6 +303,6 @@ def _import_query(syncer, client, soql, limit, seen=None) -> tuple[int, int]:
                 message=frappe.get_traceback(),
             )
             failed += 1
-        if limit and imported >= limit:
+        if limit is not None and imported >= limit:
             break
     return imported, failed
