@@ -158,6 +158,21 @@ def kept_parent_ids(client: SalesforceClient, spec: dict) -> set[str]:
 def run_retention_backfill(limit: int | None = None) -> dict:
     """Import only records matching the KEEP rules, in dependency order.
 
+    ``limit`` is a **per-object** cap, not a total across the run — e.g.
+    ``limit=200`` caps Account/Contact/Opportunity at up to 200 each (so up
+    to ~1000 records total), not 200 combined. Intended for controlled test
+    slices before a full (``limit=None``) run; confirmed via this exact
+    shape during manual validation (Account 200 / Contact 200 /
+    Opportunity 200 / Task 255 / Event 2).
+
+    Note: when ``limit`` truncates an Account/Contact/Opportunity import,
+    the activity backfill's parent set still includes every KEEP-matched Id
+    (not just the ones actually imported before the cut-off) — a handful of
+    Task/Event rows in a truncated test slice may therefore reference a
+    parent that wasn't imported this run. Harmless for a full run
+    (``limit=None``, the normal production path), where nothing is
+    truncated.
+
     Returns ``{object: {"imported": N, "failed": M}}`` for every object —
     a consistent shape across Account/Contact/Opportunity/Task/Event so
     callers (see ``tasks/retention_log.py``) can report real partial-failure
