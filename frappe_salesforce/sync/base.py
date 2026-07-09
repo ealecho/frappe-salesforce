@@ -318,6 +318,19 @@ class BaseSyncer:
             if key is None:
                 continue
             existing = doc.get(fieldname) or []
+            # SF is the source of truth for primary flags: when the incoming
+            # payload nominates a primary, clear that flag on every existing
+            # row first. Otherwise a stale primary from an earlier sync (or a
+            # manual edit) survives alongside the new one and Frappe's
+            # Contact.validate throws "Only one <X> can be set as primary."
+            # (Only bites on the update path — fresh inserts have no
+            # existing rows — which is why the purge-then-insert runs never
+            # hit it.)
+            for flag in ("is_primary", "is_primary_phone", "is_primary_mobile_no"):
+                if any(r.get(flag) for r in rows):
+                    for row in existing:
+                        if row.get(flag):
+                            row.set(flag, 0)
             existing_by_key = {
                 (row.get(key) or "").lower(): row
                 for row in existing
