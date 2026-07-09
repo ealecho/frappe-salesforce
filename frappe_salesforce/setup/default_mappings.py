@@ -1462,12 +1462,69 @@ def ensure_default_field_mappings(validate: bool = True) -> None:
     and missing default rows are appended. Admin customisations therefore
     survive, but an old/broken install with an empty mapping table can heal
     itself before sync starts.
+
+    One narrow exception to "untouched": rows listed in
+    ``_TRANSFORM_CONVERGENCES`` whose transform is inert (empty / "none")
+    are converged to the required transform — see that list's docstring.
     """
     _require_frappe()
     for mapping in DEFAULT_MAPPINGS:
         _ensure_default_mapping(mapping)
+    _converge_known_broken_transforms()
     if validate:
         validate_required_field_mappings()
+
+
+#: Rows where an inert transform (empty / "none") is known-broken: the raw
+#: SF value can never satisfy the target Frappe field, so every populated
+#: record fails to save. SF salutations carry a trailing period ("Mr.")
+#: that Frappe's period-less Salutation Link rows never match.
+#:
+#: Why converge continuously instead of a one-shot patch: "none" is the
+#: transform Select field's DEFAULT, so any row an admin adds (or
+#: re-adds) through the UI lands on "none" automatically — the broken
+#: state regenerates itself. The one-shot ``wire_salutation_link`` patch
+#: only rewrote EMPTY transforms and skipped rows already at "none"
+#: (exactly the state found on staging 2026-07-09: 141 contacts failing
+#: "Could not find Salutation: Mr."), and a patch never runs twice. Any
+#: non-inert transform value is a deliberate admin customisation and is
+#: left untouched.
+_TRANSFORM_CONVERGENCES: list[tuple[str, str, str, str]] = [
+    ("Contact", "Salutation", "salutation", "salutation_link"),
+    ("Lead", "Salutation", "salutation", "salutation_link"),
+]
+
+
+def _converge_known_broken_transforms() -> None:
+    # Per-object try/except: this runs inside every migrate AND every
+    # incremental sync tick (IncrementalSyncRunner calls
+    # ensure_default_field_mappings each run) — one object's save failing
+    # must not block the other objects, abort the tick, or prevent
+    # validate_required_field_mappings from running.
+    for sf_object, sf_field, frappe_field, transform in _TRANSFORM_CONVERGENCES:
+        try:
+            name = frappe.db.get_value(
+                "Salesforce Field Mapping", {"salesforce_object": sf_object}, "name"
+            )
+            if not name:
+                continue
+            doc = frappe.get_doc("Salesforce Field Mapping", name)
+            changed = False
+            for row in doc.field_mappings or []:
+                if (
+                    row.sf_field == sf_field
+                    and row.frappe_field == frappe_field
+                    and (row.transform or "").strip().lower() in ("", "none")
+                ):
+                    row.transform = transform
+                    changed = True
+            if changed:
+                doc.save(ignore_permissions=True)
+        except Exception:
+            frappe.log_error(
+                title=f"SF transform convergence failed: {sf_object}",
+                message=frappe.get_traceback(),
+            )
 
 
 def validate_required_field_mappings() -> None:
