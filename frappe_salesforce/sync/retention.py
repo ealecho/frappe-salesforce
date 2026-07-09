@@ -57,9 +57,13 @@ DONATION_RECEIVED = f"IsWon = true AND CloseDate >= {DONATION_WINDOW}"
 #: each run separately, contributing the parent Ids they reference.
 ACCOUNT_KEEP = {
     "object": "Account",
+    # Parenthesized (unlike a bare OR) so this stays correct if a caller
+    # ever AND-combines it with another condition — SOQL binds AND tighter
+    # than OR, so an unparenthesized "A OR B" AND C would silently become
+    # "A OR (B AND C)" instead of the intended "(A OR B) AND C".
     "scalar_where": (
-        f"LastActivityDate >= {ACTIVITY_WINDOW} "
-        f"OR npe01__LastDonationDate__c >= {DONATION_WINDOW}"
+        f"(LastActivityDate >= {ACTIVITY_WINDOW} "
+        f"OR npe01__LastDonationDate__c >= {DONATION_WINDOW})"
     ),
     "lookup_rules": [
         ("Opportunity", "AccountId", ACTIVE_GRANT),
@@ -71,9 +75,10 @@ ACCOUNT_KEEP = {
 CONTACT_KEEP = {
     "object": "Contact",
     # NB the Contact rollup API name differs from the Account's.
+    # Parenthesized for the same reason as ACCOUNT_KEEP above.
     "scalar_where": (
-        f"LastActivityDate >= {ACTIVITY_WINDOW} "
-        f"OR npe01__Last_Donation_Date__c >= {DONATION_WINDOW}"
+        f"(LastActivityDate >= {ACTIVITY_WINDOW} "
+        f"OR npe01__Last_Donation_Date__c >= {DONATION_WINDOW})"
     ),
     "lookup_rules": [
         ("Opportunity", "ContactId", ACTIVE_GRANT),

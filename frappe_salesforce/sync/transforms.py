@@ -554,7 +554,7 @@ def phone_table(payload: Any) -> list[dict] | None:
     if not isinstance(payload, dict):
         return None
     rows: list[dict] = []
-    seen: set[str] = set()
+    by_phone: dict[str, dict] = {}
     field_flags = {
         "Phone": {"is_primary_phone": 1},
         "MobilePhone": {"is_primary_mobile_no": 1},
@@ -573,17 +573,24 @@ def phone_table(payload: Any) -> list[dict] | None:
         # which Frappe's phone validator rejects wholesale.
         parts = [p.strip() for p in re.split(r"[/,;]", str(val)) if p.strip()]
         # Some "phone" fields actually hold a URL (e.g. a WhatsApp link),
-        # which splitting on "/" shreds into non-numeric fragments like
-        # "https:" — drop anything with no digits at all rather than feed
-        # it to Frappe's phone validator.
-        parts = [p for p in parts if any(ch.isdigit() for ch in p)]
+        # which splitting on "/" shreds into fragments — a bare "contains a
+        # digit" check still lets things like "send?phone=1234567" through
+        # (a query string fragment, still fails Frappe's phone validator),
+        # so require the whole fragment to look phone-shaped instead.
+        parts = [p for p in parts if re.fullmatch(r"[\d\s+().-]+", p) and any(ch.isdigit() for ch in p)]
         for i, num in enumerate(parts):
-            if num in seen:
+            # Phone/MobilePhone are frequently identical for an individual
+            # contact — merge flags into the existing row instead of
+            # dropping the duplicate outright, so e.g. is_primary_mobile_no
+            # doesn't silently vanish just because Phone was processed first.
+            if num in by_phone:
+                if i == 0:
+                    by_phone[num].update(flags)
                 continue
-            seen.add(num)
             row = {"phone": num}
             if i == 0:
                 row.update(flags)
+            by_phone[num] = row
             rows.append(row)
     return rows or None
 

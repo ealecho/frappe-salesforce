@@ -68,6 +68,13 @@ def purge_synced_records(dry_run: bool = True, limit: int | None = None) -> dict
             _force_delete(link)
             deleted += 1
             deleted_counts[link.frappe_doctype] = deleted_counts.get(link.frappe_doctype, 0) + 1
+            # Commit per successful delete, not every 100 — rollback on a
+            # later failure only rolls back uncommitted work, so batching
+            # commits would discard up to 99 already-counted deletes
+            # (records survive in the DB while deleted/deleted_counts
+            # claim they don't) every time any single delete in the batch
+            # failed. Matches _import_query's per-record commit below.
+            frappe.db.commit()
         except Exception:
             frappe.db.rollback()
             frappe.log_error(
@@ -75,8 +82,6 @@ def purge_synced_records(dry_run: bool = True, limit: int | None = None) -> dict
                 message=frappe.get_traceback(),
             )
             continue
-        if deleted % 100 == 0:
-            frappe.db.commit()
         if limit and deleted >= limit:
             break
     if not dry_run:
@@ -251,7 +256,8 @@ def _backfill_activities(client: SalesforceClient, limit: int | None) -> dict:
                 since=EPOCH,
                 extra_where=where,
             )
-            batch_imported, batch_failed = _import_query(syncer, client, soql, limit, seen=seen)
+            remaining = None if limit is None else max(0, limit - imported)
+            batch_imported, batch_failed = _import_query(syncer, client, soql, remaining, seen=seen)
             imported += batch_imported
             failed += batch_failed
             if limit and imported >= limit:

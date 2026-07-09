@@ -214,8 +214,12 @@ frappe.ui.form.on("Salesforce Settings", {
                 callback: (r) => {
                     if (!r.message) return;
                     const m = r.message;
+                    // Contact fields are Salesforce-sourced strings — escape
+                    // before interpolating into HTML (frappe.msgprint), same
+                    // as any other untrusted external data.
+                    const esc = frappe.utils.escape_html;
                     const sample = (m.sample || [])
-                        .map((s) => `<li>${s.first} ${s.last} &lt;${s.email}&gt; — ${s.names.join(", ")}</li>`)
+                        .map((s) => `<li>${esc(s.first)} ${esc(s.last)} &lt;${esc(s.email)}&gt; — ${esc((s.names || []).join(", "))}</li>`)
                         .join("");
                     frappe.msgprint({
                         title: __("Dedup Report (dry run — no changes made)"),

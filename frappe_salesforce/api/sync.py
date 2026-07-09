@@ -348,7 +348,7 @@ def retention_backfill_report():
     return out
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def purge_synced_data(dry_run: str = "true", limit: int | None = None):
     """Delete CRM records the sync created (tracked by Salesforce Record Link).
 
@@ -358,6 +358,11 @@ def purge_synced_data(dry_run: str = "true", limit: int | None = None):
     (status Running -> Success / Partial / Failed; see
     ``tasks/retention_log.py``). Only sync-created records are touched.
     ``limit`` caps deletions for a chunked run.
+
+    ``methods=["POST"]`` — Frappe's CSRF check only applies to
+    POST/PUT/DELETE/PATCH, so a bare ``@frappe.whitelist()`` (which also
+    accepts GET) would let a crafted link trigger this destructive action
+    for a logged-in System Manager with no CSRF token required.
     """
     frappe.only_for("System Manager")
     from frappe_salesforce.tasks.retention_backfill import purge_synced_records
@@ -377,12 +382,14 @@ def purge_synced_data(dry_run: str = "true", limit: int | None = None):
     return {"queued": True, "job": "salesforce_purge_synced_records"}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def start_retention_backfill(limit: int | None = None):
     """Import only records matching the retention KEEP rules. Enqueued.
 
     Tracked on a ``Salesforce Retention Log`` (status Running -> Success /
     Partial / Failed) — see ``tasks/retention_log.py``.
+
+    POST-only: see ``purge_synced_data`` for why (CSRF).
     """
     frappe.only_for("System Manager")
     if limit is not None:
@@ -397,13 +404,14 @@ def start_retention_backfill(limit: int | None = None):
     return {"queued": True, "job": "salesforce_retention_backfill"}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def dedup_contacts(dry_run: str = "true"):
     """Merge Frappe Contacts sharing first name + last name + email.
 
     ``dry_run`` defaults to "true" (reports the duplicate groups). Pass
-    ``dry_run=false`` to merge: the first contact in each group is the survivor
-    and the rest are merged into it via ``frappe.rename_doc(merge=True)``.
+    ``dry_run=false`` to merge: the first contact in each group (ordered by
+    creation) is the survivor and the rest are merged into it via
+    ``frappe.rename_doc(merge=True)``.
 
     CAUTION — sync-identity reconciliation: the survivor keeps a single unique
     ``custom_salesforce_id``. Each merged-away contact's ``Salesforce Record
@@ -412,12 +420,19 @@ def dedup_contacts(dry_run: str = "true"):
     ``custom_salesforce_id`` will then reflect whichever SF contact synced most
     recently (the records collapse to one Frappe doc, by design). Review the
     dry-run output before enabling.
+
+    POST-only: see ``purge_synced_data`` for why (CSRF).
     """
     frappe.only_for("System Manager")
     dry = str(dry_run).lower() != "false"
 
+    # order_by so which record survives a merge is deterministic across
+    # runs (frappe.get_all has no defined order otherwise), matching the
+    # "first contact in each group" claim above.
     rows = frappe.get_all(
-        "Contact", fields=["name", "first_name", "last_name", "email_id"]
+        "Contact",
+        fields=["name", "first_name", "last_name", "email_id"],
+        order_by="creation asc",
     )
     groups: dict[tuple, list[str]] = {}
     for r in rows:
