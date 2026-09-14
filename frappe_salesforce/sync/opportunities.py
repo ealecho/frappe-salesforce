@@ -77,17 +77,17 @@ class OpportunitySyncer(BaseSyncer):
     ) -> dict[str, Any]:
         # Derive ``closed_date`` from ``IsClosed=true`` + ``CloseDate``;
         # mapping rows already populate ``expected_closure_date``.
-        if rec.get("IsClosed") and rec.get("CloseDate"):
-            try:
-                values["closed_date"] = str(get_datetime(rec["CloseDate"]).date())
-            except (TypeError, ValueError) as e:
-                frappe.log_error(
-                    title="OpportunitySyncer.enrich_values",
-                    message=(
-                        f"Unparseable CloseDate for SF Opportunity "
-                        f"{rec.get('Id') or '?'}: {rec.get('CloseDate')!r}\n{e}"
-                    ),
-                )
+        closed = sf_closed_date(rec)
+        if closed:
+            values["closed_date"] = closed
+        elif rec.get("IsClosed") and rec.get("CloseDate"):
+            frappe.log_error(
+                title="OpportunitySyncer.enrich_values",
+                message=(
+                    f"Unparseable CloseDate for SF Opportunity "
+                    f"{rec.get('Id') or '?'}: {rec.get('CloseDate')!r}"
+                ),
+            )
 
         # Fallback contact resolution: if ContactId was empty, try the
         # NPSP primary-contact link.
@@ -119,8 +119,18 @@ class OpportunitySyncer(BaseSyncer):
         periodic full refresh to reconcile.
         """
         opp_id = rec.get("Id")
-        if not opp_id:
-            return
+        if opp_id:
+            self._sync_grant_grids(opp_id, doc)
+        # Frappe CRM core's validate stamps ``closed_date = nowdate()``
+        # whenever status changes to a Won-type — which includes the very
+        # insert this sync just performed — clobbering the SF CloseDate set
+        # in enrich_values. Re-assert it via db_set (hook-free write) so
+        # the Salesforce date always wins.
+        closed = sf_closed_date(rec)
+        if closed and str(doc.closed_date or "") != closed:
+            doc.db_set("closed_date", closed, update_modified=False)
+
+    def _sync_grant_grids(self, opp_id: str, doc) -> None:
         has_income_years, has_payments, has_budget = (
             self._grant_child_tables_present()
         )
@@ -185,6 +195,16 @@ class OpportunitySyncer(BaseSyncer):
 # ----------------------------------------------------------------------
 # Pure row builders (no Frappe / network deps — unit-testable)
 # ----------------------------------------------------------------------
+def sf_closed_date(rec: dict[str, Any]) -> str | None:
+    """The SF CloseDate as ``YYYY-MM-DD`` for a closed Opportunity, else None."""
+    if not (rec.get("IsClosed") and rec.get("CloseDate")):
+        return None
+    try:
+        return str(get_datetime(rec["CloseDate"]).date())
+    except (TypeError, ValueError):
+        return None
+
+
 def build_income_year_row(rec: dict[str, Any]) -> dict[str, Any]:
     """Map one ``Income_year__c`` record to a CRM Grant Income Year row.
 

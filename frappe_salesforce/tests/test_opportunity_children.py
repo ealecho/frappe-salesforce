@@ -187,3 +187,21 @@ def test_payment_status_rules():
     assert derive_payment_status(False, False, "2019-01-01", today) == "Overdue"
     assert derive_payment_status(False, False, "2025-01-01", today) == "Pending"
     assert derive_payment_status(False, False, None, today) == "Pending"
+
+
+# ----------------------------------------------------------------------
+# sf_closed_date (re-asserted after save because Frappe CRM core's
+# validate stamps closed_date=nowdate() on insert of Won-status deals)
+# ----------------------------------------------------------------------
+def test_sf_closed_date_for_closed_opportunity():
+    from frappe_salesforce.sync.opportunities import sf_closed_date
+
+    assert sf_closed_date({"IsClosed": True, "CloseDate": "2026-01-13"}) == "2026-01-13"
+
+
+def test_sf_closed_date_open_or_unparseable_is_none():
+    from frappe_salesforce.sync.opportunities import sf_closed_date
+
+    assert sf_closed_date({"IsClosed": False, "CloseDate": "2026-01-13"}) is None
+    assert sf_closed_date({"IsClosed": True, "CloseDate": None}) is None
+    assert sf_closed_date({"IsClosed": True, "CloseDate": "not-a-date"}) is None

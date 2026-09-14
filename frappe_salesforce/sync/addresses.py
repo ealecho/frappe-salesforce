@@ -106,6 +106,7 @@ def upsert_address_for_record(
                 {"link_doctype": parent_doctype, "link_name": parent_name},
             )
         doc.save(ignore_permissions=True)
+        _set_parent_address_field(parent_doctype, parent_name, doc.name)
         return doc.name
 
     doc = frappe.get_doc(
@@ -118,7 +119,29 @@ def upsert_address_for_record(
         }
     )
     doc.insert(ignore_permissions=True)
+    _set_parent_address_field(parent_doctype, parent_name, doc.name)
     return doc.name
+
+
+def _set_parent_address_field(
+    parent_doctype: str, parent_name: str, address_name: str
+) -> None:
+    """Point the parent's native ``address`` Link field at the Address doc.
+
+    The CRM UI reads ``CRM Organization.address`` / ``Contact.address`` —
+    Dynamic Links alone leave the address invisible on the record page.
+    First upserted address wins (Billing for orgs, Mailing for contacts,
+    per caller prefix order); an already-set field is left alone so a
+    manual choice survives re-syncs.
+    """
+    df = frappe.get_meta(parent_doctype).get_field("address")
+    if not df or df.fieldtype != "Link" or df.options != "Address":
+        return
+    if frappe.db.get_value(parent_doctype, parent_name, "address"):
+        return
+    frappe.db.set_value(
+        parent_doctype, parent_name, "address", address_name, update_modified=False
+    )
 
 
 # ----------------------------------------------------------------------
