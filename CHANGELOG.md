@@ -10,6 +10,10 @@
   effectively never (flagged as "missing" in the client's Sept 2026 data
   check). One-shot patch fills them via a single paginated SOQL query;
   failure is logged, never aborts the migrate.
+- Client-facing labels for the giving fields surfaced in the CRM side
+  panels (peas_crm@33a14d2): "Total Gifts (Lifetime)", "Latest Gift
+  Amount", "Latest Gift Date", "Gift Count", "Lifetime Giving" — was
+  "SF Total Opp Amount" etc.
 
 ## [0.1.13]
 
