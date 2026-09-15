@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.11]
+
+### Fixed
+- Won-status CRM Deals carried the sync-run date in `closed_date`:
+  Frappe CRM core's validate stamps `closed_date = nowdate()` whenever a
+  deal is inserted in a Won-type status, clobbering the SF CloseDate set
+  by the syncer. The Opportunity syncer now re-asserts the SF date via
+  `db_set` after every save, and a migrate patch
+  (`repair_closed_dates_and_address_links`) restores existing deals from
+  `expected_closure_date`.
+- Synced addresses were invisible in the CRM UI: Address docs were
+  linked via Dynamic Link only, but the record page reads the native
+  `address` Link field on CRM Organization / Contact. The address upsert
+  now sets that field (first address wins, manual choices preserved) and
+  the same patch backfills it for existing records.
+
 ## [0.1.10]
 
 ### Fixed
