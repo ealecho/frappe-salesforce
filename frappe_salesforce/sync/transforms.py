@@ -359,28 +359,33 @@ def lead_status_link(sf_status: str | None) -> str | None:
 # Standard SF stages kept for defensive coverage.
 #
 # The active PEAS pipeline stages (Research, Cold proposal…, Warm proposal…,
-# Final stage proposal, Finalising, Won, Lost, Reporting Delivered) are
-# mirrored 1:1 as CRM Deal Status records carrying the exact SF probability
-# (seeded by ``setup/deal_statuses.py``). Those stages are therefore *not*
-# remapped here — ``map_deal_stage`` falls back to returning the stage name
-# unchanged, so they link straight to the matching status and ``peas_crm``
-# derives the right probability from it. Only synonyms / legacy / standard
-# SF stages are normalised onto a canonical mirror status below.
+# Final stage proposal, Finalising, Reporting Delivered) are mirrored 1:1 as
+# CRM Deal Status records carrying the exact SF probability (seeded by
+# ``setup/deal_statuses.py``). Those stages are *not* remapped here —
+# ``map_deal_stage`` falls back to returning the stage name unchanged, so
+# they link straight to the matching status and ``peas_crm`` derives the
+# right probability from it. The exceptions are the terminal stages: SF
+# "Won"/"Lost" (and their synonyms) are normalised onto peas_crm's renamed
+# terminal statuses "Closed"/"Unsuccessful" below.
 DEAL_STAGE_MAP = {
-    # Won synonyms → the "Won" mirror status
-    "Grant Won": "Won",
-    "Donation received": "Won",
-    "Closed Won": "Won",
-    # PEAS SF uses a bare "Closed" stage for completed grants: 1,689 of
-    # 1,690 such deals are IsWon=true at 100% probability, so it's a won
-    # synonym — without this entry those deals never count as won and the
-    # grants app's deal→Grant hook never fires for them.
-    "Closed": "Won",
-    # Lost synonyms → the "Lost" mirror status
-    "Withdrawn": "Lost",
-    "Grant unsuccessful": "Lost",
-    "Unsuccesful": "Lost",  # SF data carries this misspelling
-    "Closed Lost": "Lost",
+    # Won synonyms → the "Closed" terminal status. NOT "Won": peas_crm's
+    # after_migrate converger force-renames Won → Closed (its June 2026
+    # grant vocabulary) via raw SQL over every deal, so anything we file
+    # under "Won" is silently re-filed on the next migrate — targeting
+    # "Closed" directly is the only stable choice. The SF pipeline's own
+    # "Won" stage and its bare "Closed" stage both land there too (the
+    # latter passes through unchanged).
+    "Won": "Closed",
+    "Grant Won": "Closed",
+    "Donation received": "Closed",
+    "Closed Won": "Closed",
+    # Lost synonyms → the "Unsuccessful" terminal status (same converger:
+    # Lost → Unsuccessful).
+    "Lost": "Unsuccessful",
+    "Withdrawn": "Unsuccessful",
+    "Grant unsuccessful": "Unsuccessful",
+    "Unsuccesful": "Unsuccessful",  # SF data carries this misspelling
+    "Closed Lost": "Unsuccessful",
     # Legacy / standard SF stages → nearest active mirror stage
     "Fundraising target": "Research",
     "Pledged": "Finalising",

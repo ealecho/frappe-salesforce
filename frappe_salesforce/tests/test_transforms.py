@@ -65,10 +65,14 @@ def test_html_strip_unescapes_entities():
 # Picklist mappers
 # ----------------------------------------------------------------------
 def test_map_deal_stage_known():
-    assert map_deal_stage("Closed Won") == "Won"
-    assert map_deal_stage("Closed Lost") == "Lost"
-    # PEAS SF's bare "Closed" stage is a won synonym (IsWon=true, 100%)
-    assert map_deal_stage("Closed") == "Won"
+    # Terminal targets are peas_crm's renamed vocabulary, not "Won"/"Lost"
+    # (its after_migrate converger renames those away on every migrate).
+    assert map_deal_stage("Closed Won") == "Closed"
+    assert map_deal_stage("Won") == "Closed"
+    assert map_deal_stage("Closed Lost") == "Unsuccessful"
+    assert map_deal_stage("Lost") == "Unsuccessful"
+    # PEAS SF's bare "Closed" stage passes through to the "Closed" status
+    assert map_deal_stage("Closed") == "Closed"
 
 
 def test_map_deal_stage_passthrough_unknown():
@@ -104,8 +108,6 @@ def test_peas_active_stages_pass_through_unchanged():
         "Warm proposal to existing funder",
         "Final stage proposal",
         "Finalising",
-        "Won",
-        "Lost",
         "Reporting Delivered",
     ]:
         assert map_deal_stage(stage) == stage
@@ -120,8 +122,8 @@ def test_peas_deal_status_seed_probabilities_match_sf():
     assert by_name["Final stage proposal"]["probability"] == 75
     assert by_name["Finalising"]["probability"] == 90
     # Closed flags map onto CRM Deal Status types.
-    assert by_name["Won"]["type"] == "Won" and by_name["Won"]["probability"] == 100
-    assert by_name["Lost"]["type"] == "Lost" and by_name["Lost"]["probability"] == 0
+    assert by_name["Closed"]["type"] == "Won" and by_name["Closed"]["probability"] == 100
+    assert by_name["Unsuccessful"]["type"] == "Lost" and by_name["Unsuccessful"]["probability"] == 0
     assert by_name["Reporting Delivered"]["type"] == "Won"
 
 

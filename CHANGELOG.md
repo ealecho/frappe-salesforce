@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.13]
+
+### Changed
+- Terminal deal statuses now target peas_crm's renamed vocabulary:
+  won-stage synonyms (incl. SF "Won") map to **"Closed"** and lost-stage
+  synonyms (incl. SF "Lost") map to **"Unsuccessful"**, and
+  `deal_statuses.py` seeds those rows instead of "Won"/"Lost".
+  peas_crm's after_migrate converger force-renames Won→Closed and
+  Lost→Unsuccessful via raw SQL over every deal, so anything this app
+  filed under "Won"/"Lost" was silently re-filed on the next migrate —
+  and the re-seeded "Won"/"Lost" rows were recreated for it to fight
+  over, forever. Companion change: frappe_grants_budgeting now detects
+  won deals by status *type*, so the deal→Grant hook fires for "Closed".
+
 ## [0.1.12]
 
 ### Fixed

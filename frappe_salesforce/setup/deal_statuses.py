@@ -32,8 +32,13 @@ PEAS_DEAL_STATUSES: list[dict] = [
     {"deal_status": "Warm proposal to existing funder", "type": "Open", "position": 4, "probability": 50, "color": "teal"},
     {"deal_status": "Final stage proposal", "type": "Open", "position": 5, "probability": 75, "color": "amber"},
     {"deal_status": "Finalising", "type": "Open", "position": 6, "probability": 90, "color": "orange"},
-    {"deal_status": "Won", "type": "Won", "position": 7, "probability": 100, "color": "green"},
-    {"deal_status": "Lost", "type": "Lost", "position": 8, "probability": 0, "color": "red"},
+    # Terminal statuses use peas_crm's renamed vocabulary ("Closed" /
+    # "Unsuccessful"), NOT the SF stage names "Won" / "Lost": peas_crm's
+    # after_migrate converger renames Won→Closed and Lost→Unsuccessful,
+    # deleting the old rows — seeding "Won"/"Lost" here just recreated
+    # empty rows for it to fight over on every migrate.
+    {"deal_status": "Closed", "type": "Won", "position": 7, "probability": 100, "color": "green"},
+    {"deal_status": "Unsuccessful", "type": "Lost", "position": 8, "probability": 0, "color": "red"},
     {"deal_status": "Reporting Delivered", "type": "Won", "position": 9, "probability": 100, "color": "violet"},
 ]
 
