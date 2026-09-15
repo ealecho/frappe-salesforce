@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.14]
+
+### Fixed
+- Org email backfill: `Account.General_enquiries_email__c` →
+  `custom_sf_general_enquiries_email` was already mapped, but orgs
+  synced before the row existed never pull it — the value only arrives
+  when the SF Account is next modified, which for a static org email is
+  effectively never (flagged as "missing" in the client's Sept 2026 data
+  check). One-shot patch fills them via a single paginated SOQL query;
+  failure is logged, never aborts the migrate.
+
 ## [0.1.13]
 
 ### Changed
