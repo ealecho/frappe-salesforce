@@ -371,6 +371,11 @@ DEAL_STAGE_MAP = {
     "Grant Won": "Won",
     "Donation received": "Won",
     "Closed Won": "Won",
+    # PEAS SF uses a bare "Closed" stage for completed grants: 1,689 of
+    # 1,690 such deals are IsWon=true at 100% probability, so it's a won
+    # synonym — without this entry those deals never count as won and the
+    # grants app's deal→Grant hook never fires for them.
+    "Closed": "Won",
     # Lost synonyms → the "Lost" mirror status
     "Withdrawn": "Lost",
     "Grant unsuccessful": "Lost",

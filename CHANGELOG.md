@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.12]
+
+### Fixed
+- The PEAS Salesforce stage "Closed" (a won synonym: 1,689 of 1,690 such
+  deals are IsWon=true at 100% probability) was not in the deal stage
+  map, so those deals linked to an auto-created "Closed" status — never
+  counting as won and never triggering the grants app's deal→Grant hook.
+  "Closed" now maps to "Won"; a migrate patch remaps existing synced
+  deals (direct SQL, no hooks) and backfills Grants via the grants app's
+  `_create_grant_from_deal` for won deals closed on/after 2024-01-01
+  that have none (no-op on benches without frappe_grants_budgeting).
+
 ## [0.1.11]
 
 ### Fixed

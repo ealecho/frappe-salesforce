@@ -67,6 +67,8 @@ def test_html_strip_unescapes_entities():
 def test_map_deal_stage_known():
     assert map_deal_stage("Closed Won") == "Won"
     assert map_deal_stage("Closed Lost") == "Lost"
+    # PEAS SF's bare "Closed" stage is a won synonym (IsWon=true, 100%)
+    assert map_deal_stage("Closed") == "Won"
 
 
 def test_map_deal_stage_passthrough_unknown():
