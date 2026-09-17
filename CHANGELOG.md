@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.15]
+
+No code changes — version bump to trigger a bench redeploy (staging
+rollout of 0.1.11–0.1.14: close-date preservation + repair, address
+linking + backfill, terminal-status vocabulary alignment, grant
+backfill, org email backfill, side-panel field labels).
+
 ## [0.1.14]
 
 ### Fixed
