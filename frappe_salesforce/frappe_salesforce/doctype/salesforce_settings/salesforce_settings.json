@@ -38,7 +38,8 @@
   "last_sync_lead",
   "last_sync_opportunity",
   "last_sync_task",
-  "last_sync_event"
+  "last_sync_event",
+  "last_sync_email_message"
  ],
  "fields": [
   {"fieldname": "enabled", "fieldtype": "Check", "label": "Enabled", "default": "0"},
@@ -75,7 +76,8 @@
   {"fieldname": "last_sync_lead", "fieldtype": "Datetime", "label": "Last Sync: Lead"},
   {"fieldname": "last_sync_opportunity", "fieldtype": "Datetime", "label": "Last Sync: Opportunity"},
   {"fieldname": "last_sync_task", "fieldtype": "Datetime", "label": "Last Sync: Task"},
-  {"fieldname": "last_sync_event", "fieldtype": "Datetime", "label": "Last Sync: Event"}
+  {"fieldname": "last_sync_event", "fieldtype": "Datetime", "label": "Last Sync: Event"},
+  {"fieldname": "last_sync_email_message", "fieldtype": "Datetime", "label": "Last Sync: Email Message"}
  ],
  "issingle": 1,
  "links": [],

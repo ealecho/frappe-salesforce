@@ -606,6 +606,44 @@ def phone_table(payload: Any) -> list[dict] | None:
 
 
 # ----------------------------------------------------------------------
+# EmailMessage → Communication (consumed by sync/emails.py; pure so the
+# mapping stays unit-testable without a bench)
+# ----------------------------------------------------------------------
+def build_communication_values(rec: dict[str, Any]) -> dict[str, Any]:
+    """Map one SF ``EmailMessage`` to Frappe ``Communication`` values.
+
+    ``content`` prefers ``HtmlBody``; a text-only email is escaped and
+    <br>-joined so it renders faithfully as HTML. SF address lists are
+    semicolon-separated; Frappe expects commas.
+    """
+    text_body = rec.get("TextBody") or ""
+    content = rec.get("HtmlBody") or html.escape(text_body).replace("\n", "<br>")
+    return {
+        "communication_type": "Communication",
+        "communication_medium": "Email",
+        "status": "Linked",
+        "sent_or_received": "Received" if rec.get("Incoming") else "Sent",
+        "subject": rec.get("Subject") or "(no subject)",
+        "content": content,
+        "text_content": text_body or None,
+        "sender": rec.get("FromAddress"),
+        "sender_full_name": rec.get("FromName"),
+        "recipients": _to_frappe_addresses(rec.get("ToAddress")),
+        "cc": _to_frappe_addresses(rec.get("CcAddress")),
+        "bcc": _to_frappe_addresses(rec.get("BccAddress")),
+        "communication_date": to_datetime(rec.get("MessageDate")),
+    }
+
+
+def _to_frappe_addresses(value: Any) -> str | None:
+    """SF ``a@x.com; b@y.com`` → Frappe ``a@x.com, b@y.com``."""
+    if not value:
+        return None
+    parts = [p.strip() for p in str(value).replace(";", ",").split(",") if p.strip()]
+    return ", ".join(parts) or None
+
+
+# ----------------------------------------------------------------------
 # Dispatcher
 # ----------------------------------------------------------------------
 TRANSFORMS = {

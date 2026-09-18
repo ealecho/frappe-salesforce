@@ -183,7 +183,13 @@ class BaseSyncer:
         values = self._apply_mapping(rec)
         values = self.enrich_values(rec, values)
 
-        if self.link_only:
+        # A syncer can veto a record by setting ``__skip__`` in
+        # enrich_values (e.g. an EmailMessage whose RelatedToId resolves
+        # to nothing synced). Link bookkeeping below still records the SF
+        # id so the skip is visible and idempotent.
+        if values.pop("__skip__", False):
+            self.log.skipped = (self.log.skipped or 0) + 1
+        elif self.link_only:
             frappe_name = self._resolve_link_only(rec, values)
             if frappe_name:
                 link.frappe_name = frappe_name

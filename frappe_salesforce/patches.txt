@@ -20,3 +20,4 @@ frappe_salesforce.patches.v0_1_0.drop_probability_mapping
 frappe_salesforce.patches.v0_1_0.repair_closed_dates_and_address_links
 frappe_salesforce.patches.v0_1_0.remap_closed_won_deals_and_backfill_grants
 frappe_salesforce.patches.v0_1_0.backfill_org_general_enquiries_email
+frappe_salesforce.patches.v0_1_0.backfill_email_messages

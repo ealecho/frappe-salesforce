@@ -34,6 +34,7 @@ SF_ID_DOCTYPES = [
     "CRM Lead",
     "CRM Deal",
     "CRM Task",
+    "Communication",  # EmailMessage mirror (sync/emails.py)
 ]
 
 # ----------------------------------------------------------------------
@@ -587,6 +588,9 @@ ALL_CUSTOM_FIELDS: dict[str, list[dict]] = {
     "CRM Lead": CRM_LEAD_FIELDS,
     "CRM Deal": CRM_DEAL_FIELDS,
     "CRM Task": CRM_TASK_FIELDS,
+    # Communication only carries the upsert key — every other value is
+    # computed into native fields by sync/emails.py.
+    "Communication": [SF_ID_FIELD],
 }
 
 

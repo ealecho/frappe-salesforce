@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.16]
+
+### Added
+- EmailMessage → Communication syncer: logged Salesforce emails now
+  appear in the CRM's Emails tab as real correspondence (sender,
+  recipients, full HTML body, sent/received direction) instead of only
+  as email-flagged task entries. Emails link to the synced record their
+  SF ``RelatedToId`` resolves to; unresolvable ones are skipped and
+  counted. A migrate patch enqueues a one-off full-history pull —
+  EmailMessage is not subject to SF activity archival, so unlike Tasks
+  this reaches the complete correspondence history. New high-water mark
+  ``last_sync_email_message`` keeps it current every tick thereafter.
+
 ## [0.1.15]
 
 No code changes — version bump to trigger a bench redeploy (staging
