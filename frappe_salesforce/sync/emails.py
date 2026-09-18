@@ -79,6 +79,15 @@ def backfill_all_email_messages() -> None:
 
     if not frappe.db.get_single_value("Salesforce Settings", "enabled"):
         return
+    # The enqueuing patch runs BEFORE after_migrate seeds custom fields,
+    # and the worker can pick this job up in that window — first run on
+    # peasuk-dev hit exactly that: 858 upserts failed on "Unknown column
+    # 'custom_salesforce_id'". Self-heal instead of racing.
+    if not frappe.get_meta("Communication").get_field("custom_salesforce_id"):
+        from frappe_salesforce.setup.custom_fields import ensure_all_custom_fields
+
+        ensure_all_custom_fields()
+        frappe.clear_cache(doctype="Communication")
     client = SalesforceClient()
     syncer = EmailMessageSyncer(client, frappe._dict())
     soql = build_incremental_query(

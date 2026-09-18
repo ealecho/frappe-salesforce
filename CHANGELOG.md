@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.17]
+
+### Fixed
+- EmailMessage backfill raced the custom-field seeding: the enqueuing
+  patch runs before after_migrate creates
+  ``Communication.custom_salesforce_id``, so the first run failed every
+  upsert with "Unknown column". The job now ensures the field itself,
+  and the patch is re-listed to rerun the backfill.
+
 ## [0.1.16]
 
 ### Added
