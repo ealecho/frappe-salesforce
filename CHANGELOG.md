@@ -28,6 +28,12 @@
   `resync_opportunities` renews its client before the per-tick budget
   runs out, so a full re-sync isn't capped by it, and takes
   `only_failed` to retry just the deals marked Failed.
+- The per-day API budget (`max_calls_per_day`) now works. Its counter
+  was incremented under a raw Redis key but read through
+  `cache.get_value`, which adds the site prefix and unpickles, so it
+  always read 0 and the budget never tripped. Only Salesforce's own 90%
+  org-quota abort was guarding the daily limit. The counter is now
+  per-site.
 
 ### Changed
 - Salesforce Record Link now has a unique key on
