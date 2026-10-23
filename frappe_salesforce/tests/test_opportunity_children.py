@@ -183,10 +183,25 @@ def test_budget_soql_filters_by_parent_opportunity():
 def test_payment_status_rules():
     today = date(2020, 1, 1)
     assert derive_payment_status(True, False, "2019-01-01", today) == "Received"
-    assert derive_payment_status(False, True, "2025-01-01", today) == "Overdue"
+    assert derive_payment_status(False, True, "2025-01-01", today) == "Written Off"
     assert derive_payment_status(False, False, "2019-01-01", today) == "Overdue"
     assert derive_payment_status(False, False, "2025-01-01", today) == "Pending"
     assert derive_payment_status(False, False, None, today) == "Pending"
+
+
+def test_written_off_falls_back_to_overdue_without_the_option():
+    # Sites without peas_crm's "Written Off" option pass "Overdue" instead.
+    today = date(2020, 1, 1)
+    assert derive_payment_status(False, True, "2025-01-01", today, "Overdue") == "Overdue"
+    rec = {
+        "npe01__Scheduled_Date__c": "2019-06-01",
+        "npe01__Payment_Amount__c": 5000.0,
+        "npe01__Payment_Date__c": None,
+        "npe01__Paid__c": False,
+        "npe01__Written_Off__c": True,
+    }
+    assert build_payment_row(rec, today)["payment_status"] == "Written Off"
+    assert build_payment_row(rec, today, "Overdue")["payment_status"] == "Overdue"
 
 
 # ----------------------------------------------------------------------

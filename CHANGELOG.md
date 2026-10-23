@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.1.18]
+
+### Fixed
+- Deals no longer get saved without their income years, payments or
+  budget. When the API budget ran out on a grid query, the error was
+  swallowed and the deal was still saved and marked Synced; the
+  high-water mark then moved past it, so it was never retried (the
+  110 deals in tab 2 of the 22 Oct list). Budget and quota errors now
+  end the run with that deal rolled back, and the next tick retries it.
+  Any other grid failure fails just that deal.
+- A failed record is now rolled back completely (savepoint per record),
+  including its Salesforce Record Link, and its link is marked Failed
+  with the error. Previously a failed record could leave a blank link
+  behind.
+- Written-off Salesforce payments sync as "Written Off" instead of
+  "Overdue" once peas_crm has that option; sites without it keep
+  "Overdue".
+- `resync_opportunities` and `backfill_deal_child_tables` stop cleanly
+  on a budget error instead of logging one failure per remaining deal.
+  `resync_opportunities` uses a fresh client per batch of 200, so a full
+  re-sync isn't capped by the per-tick budget, and takes `only_failed`
+  to retry just the deals marked Failed.
+
+### Changed
+- Salesforce Record Link now has a unique key on
+  `(salesforce_object, salesforce_id)`. A migrate patch first deletes
+  the duplicate links (from the overlapping 14 May runs), keeping the
+  one whose Frappe record exists.
+
 ## [0.1.17]
 
 ### Fixed

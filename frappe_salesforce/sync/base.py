@@ -8,7 +8,11 @@ import frappe
 from frappe.utils import get_datetime, now_datetime
 
 from frappe_salesforce.salesforce.client import SalesforceClient
-from frappe_salesforce.salesforce.exceptions import SalesforceAPIError
+from frappe_salesforce.salesforce.exceptions import (
+    SalesforceAPIError,
+    SalesforceBudgetExceeded,
+    SalesforceRateLimitError,
+)
 from frappe_salesforce.salesforce.soql import build_incremental_query
 
 from .transforms import apply_transform
@@ -16,6 +20,17 @@ from .transforms import apply_transform
 #: Commit advanced high-water mark every N successfully processed records
 #: so a crash mid-run doesn't force reprocessing the whole page next tick.
 HWM_CHECKPOINT_EVERY = 50
+
+#: Quota guards that end the whole run, even when they fire part-way
+#: through one record (e.g. on a grid query in ``after_upsert``). Never
+#: swallow these per record: on 2026-06-29 the per-tick budget ran out
+#: mid-run and every remaining deal was saved and marked Synced without
+#: its income-year / payment grids, then never retried.
+STOP_RUN_ERRORS = (SalesforceBudgetExceeded, SalesforceRateLimitError)
+
+#: Savepoint wrapping each record in ``run`` so a failed record leaves no
+#: half-written rows behind (its Record Link included).
+RECORD_SAVEPOINT = "sf_sync_record"
 
 #: TEMPORARY STOPGAP — exact error strings from known bugs in *other* apps'
 #: CRM Deal ``on_update`` hooks that otherwise kill the whole deal save.
@@ -65,6 +80,19 @@ def _persist_tolerating_known_hook_bugs(fn) -> None:
             ),
         )
 
+
+def _rollback_record() -> None:
+    """Undo the current record's writes back to ``RECORD_SAVEPOINT``.
+
+    Fails quietly if the savepoint is gone (something committed mid-record,
+    or the database already rolled the transaction back, e.g. a deadlock):
+    there is then nothing left to undo here.
+    """
+    try:
+        frappe.db.rollback(save_point=RECORD_SAVEPOINT)
+    except Exception:
+        pass
+
 #: Tolerate this many consecutive 401s inside the SOQL pagination loop
 #: before aborting the syncer. The client already does one transparent
 #: refresh-and-retry per call; consecutive 401s here mean the refreshed
@@ -90,6 +118,10 @@ class BaseSyncer:
     #: Extra SOQL fields the syncer needs (for ``enrich_values`` /
     #: ``after_upsert``) but that aren't represented as mapping rows.
     extra_soql_fields: ClassVar[tuple[str, ...]] = ()
+    #: If True, an ``after_upsert`` failure fails the whole record instead
+    #: of being logged and ignored. Set it when ``after_upsert`` writes data
+    #: the record is incomplete without (e.g. the Opportunity grids).
+    after_upsert_required: ClassVar[bool] = False
 
     def __init__(self, client: SalesforceClient, log_item: Any):
         self.client = client
@@ -148,6 +180,7 @@ class BaseSyncer:
                         continue
                     raise
 
+                frappe.db.savepoint(RECORD_SAVEPOINT)
                 try:
                     auth_failures = 0  # any successful fetch resets the counter
                     self._process_record(rec)
@@ -160,12 +193,22 @@ class BaseSyncer:
                         self._set_high_water_mark(new_hwm)
                         frappe.db.commit()
                         processed_since_checkpoint = 0
+                except STOP_RUN_ERRORS:
+                    # Undo the half-done record and end the run. The HWM in
+                    # ``finally`` stays on the last complete record, so the
+                    # next tick picks this one up again.
+                    _rollback_record()
+                    raise
                 except Exception as e:
+                    # Roll back before logging: Error Log rows are written in
+                    # this same transaction.
+                    _rollback_record()
                     self.log.failed = (self.log.failed or 0) + 1
                     frappe.log_error(
                         title=f"SF sync {self.salesforce_object} record {rec.get('Id')}",
                         message=frappe.get_traceback() or str(e),
                     )
+                    self._mark_link_failed(rec.get("Id"), e)
         finally:
             # Always record API calls spent by this syncer and persist the
             # latest HWM we safely reached — even if the loop aborted due
@@ -202,9 +245,13 @@ class BaseSyncer:
             if doc is not None:
                 try:
                     self.after_upsert(rec, doc)
+                except STOP_RUN_ERRORS:
+                    raise
                 except Exception as e:
-                    # after_upsert side-effects (e.g. address upsert) must
-                    # not fail the whole record sync.
+                    if self.after_upsert_required:
+                        raise
+                    # Optional side-effects (e.g. address upsert) must not
+                    # fail the whole record sync.
                     frappe.log_error(
                         title=f"SF after_upsert {self.salesforce_object} {sf_id}",
                         message=frappe.get_traceback() or str(e),
@@ -582,8 +629,42 @@ class BaseSyncer:
                 "frappe_doctype": self.frappe_doctype,
             }
         )
-        doc.insert(ignore_permissions=True)
+        try:
+            doc.insert(ignore_permissions=True)
+        except frappe.UniqueValidationError:
+            # Another run inserted this link between our lookup and insert;
+            # the unique key on (salesforce_object, salesforce_id) refused
+            # the duplicate, so use theirs.
+            name = frappe.db.get_value(
+                "Salesforce Record Link",
+                {
+                    "salesforce_id": salesforce_id,
+                    "salesforce_object": self.salesforce_object,
+                },
+                "name",
+            )
+            if not name:
+                raise
+            return frappe.get_doc("Salesforce Record Link", name)
         return doc
+
+    def _mark_link_failed(self, salesforce_id: str | None, error: Exception) -> None:
+        """Flag a failed record on its link so it can be found and retried.
+
+        Called after the record's rollback, so the failed attempt's own
+        writes are already gone. A link that was Synced before keeps its
+        ``frappe_name``; only its status changes.
+        """
+        if not salesforce_id:
+            return
+        try:
+            link = self._get_or_create_link(salesforce_id)
+            link.sync_status = "Failed"
+            link.error_message = str(error)[:1000]
+            link.save(ignore_permissions=True)
+        except Exception:
+            # Bookkeeping only; the Error Log already holds the failure.
+            pass
 
 
 def _split_sf_fields(value: str | None) -> list[str]:

@@ -8,6 +8,7 @@ from frappe.utils import now_datetime
 from .custom_fields import SF_ID_DOCTYPES, ensure_all_custom_fields
 from .deal_statuses import ensure_peas_deal_statuses
 from .default_mappings import ensure_default_field_mappings, seed_default_field_mappings
+from .record_links import ensure_record_link_unique
 
 #: Re-exported for backwards-compat with patches/v0_0_1.
 __all__ = [
@@ -39,6 +40,9 @@ def after_install() -> None:
     _ensure_default_settings()
     seed_default_field_mappings()
     ensure_peas_deal_statuses()
+    # Patches are marked done on a fresh install without running, so the
+    # dedupe patch's unique key has to be added here too.
+    ensure_record_link_unique()
     frappe.db.commit()
 
 
