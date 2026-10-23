@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, ClassVar
 
 import frappe
@@ -27,6 +28,11 @@ HWM_CHECKPOINT_EVERY = 50
 #: mid-run and every remaining deal was saved and marked Synced without
 #: its income-year / payment grids, then never retried.
 STOP_RUN_ERRORS = (SalesforceBudgetExceeded, SalesforceRateLimitError)
+
+#: ``Salesforce Settings`` field holding, per high-water-mark field, the Id
+#: of the last record synced at exactly that timestamp (see
+#: ``build_incremental_query(after_id=...)``).
+HWM_LAST_IDS_FIELD = "hwm_last_ids"
 
 #: Savepoint wrapping each record in ``run`` so a failed record leaves no
 #: half-written rows behind (its Record Link included).
@@ -134,11 +140,13 @@ class BaseSyncer:
     # ------------------------------------------------------------------
     def run(self) -> None:
         since = self._get_high_water_mark()
+        last_id = self._get_last_id(since)
         soql = build_incremental_query(
             sobject=self.salesforce_object,
             fields=self._soql_fields(),
             since=since,
             extra_where=self.extra_where,
+            after_id=last_id,
         )
         self.log.soql = soql
         new_hwm = get_datetime(since).replace(tzinfo=None) if since else None
@@ -186,17 +194,21 @@ class BaseSyncer:
                     self._process_record(rec)
                     self.log.fetched = (self.log.fetched or 0) + 1
                     modstamp = get_datetime(rec["SystemModstamp"]).replace(tzinfo=None)
-                    if new_hwm is None or modstamp > new_hwm:
+                    # ``>=``: records come sorted by (SystemModstamp, Id), so
+                    # within one timestamp the latest record wins the Id.
+                    if new_hwm is None or modstamp >= new_hwm:
                         new_hwm = modstamp
+                        last_id = rec["Id"]
                     processed_since_checkpoint += 1
                     if processed_since_checkpoint >= HWM_CHECKPOINT_EVERY:
-                        self._set_high_water_mark(new_hwm)
+                        self._set_high_water_mark(new_hwm, last_id)
                         frappe.db.commit()
                         processed_since_checkpoint = 0
                 except STOP_RUN_ERRORS:
-                    # Undo the half-done record and end the run. The HWM in
-                    # ``finally`` stays on the last complete record, so the
-                    # next tick picks this one up again.
+                    # Undo the half-done record and end the run. The mark in
+                    # ``finally`` stays on the last complete record (its
+                    # timestamp and Id), so the next tick picks this one up
+                    # again even if it shares that timestamp.
                     _rollback_record()
                     raise
                 except Exception as e:
@@ -215,7 +227,7 @@ class BaseSyncer:
             # to a budget/quota exception higher up the stack.
             self.log.api_calls_used = self.client.calls_this_tick - calls_before
             if new_hwm is not None:
-                self._set_high_water_mark(new_hwm)
+                self._set_high_water_mark(new_hwm, last_id)
 
     # ------------------------------------------------------------------
     # Per-record processing
@@ -602,10 +614,32 @@ class BaseSyncer:
         # explicit "Backfill From Date" action on Salesforce Settings.
         return str(now_datetime())
 
-    def _set_high_water_mark(self, value) -> None:
+    def _get_last_id(self, since: str) -> str | None:
+        """Id of the last record synced at exactly ``since``, if recorded.
+
+        Only trusted while the mark is unchanged: an operator reset
+        (backfill from a date, reset to epoch) moves the mark and so
+        drops it.
+        """
+        entry = _load_last_ids().get(self.high_water_field) or {}
+        if not (entry.get("id") and entry.get("at")):
+            return None
+        if get_datetime(entry["at"]) != get_datetime(since):
+            return None
+        return entry["id"]
+
+    def _set_high_water_mark(self, value, last_id: str | None = None) -> None:
         if not self.high_water_field:
             return
         frappe.db.set_single_value("Salesforce Settings", self.high_water_field, value)
+        last_ids = _load_last_ids()
+        if last_id:
+            last_ids[self.high_water_field] = {"at": str(value), "id": last_id}
+        else:
+            last_ids.pop(self.high_water_field, None)
+        frappe.db.set_single_value(
+            "Salesforce Settings", HWM_LAST_IDS_FIELD, json.dumps(last_ids)
+        )
 
     # ------------------------------------------------------------------
     # Record Link helpers
@@ -634,7 +668,10 @@ class BaseSyncer:
         except frappe.UniqueValidationError:
             # Another run inserted this link between our lookup and insert;
             # the unique key on (salesforce_object, salesforce_id) refused
-            # the duplicate, so use theirs.
+            # the duplicate, so use theirs. ``for_update`` makes this a
+            # locking read, which sees their committed row; a plain read
+            # would reuse this transaction's REPEATABLE READ snapshot, taken
+            # before they committed.
             name = frappe.db.get_value(
                 "Salesforce Record Link",
                 {
@@ -642,6 +679,7 @@ class BaseSyncer:
                     "salesforce_object": self.salesforce_object,
                 },
                 "name",
+                for_update=True,
             )
             if not name:
                 raise
@@ -665,6 +703,18 @@ class BaseSyncer:
         except Exception:
             # Bookkeeping only; the Error Log already holds the failure.
             pass
+
+
+def _load_last_ids() -> dict:
+    """``Salesforce Settings.hwm_last_ids``, read fresh (not the cached doc)."""
+    try:
+        raw = frappe.db.get_single_value("Salesforce Settings", HWM_LAST_IDS_FIELD)
+        value = json.loads(raw) if raw else {}
+    except Exception:
+        # Field not migrated yet, or unreadable: fall back to the plain
+        # timestamp mark.
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _split_sf_fields(value: str | None) -> list[str]:

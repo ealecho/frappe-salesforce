@@ -17,11 +17,17 @@
 - Written-off Salesforce payments sync as "Written Off" instead of
   "Overdue" once peas_crm has that option; sites without it keep
   "Overdue".
+- Records sharing a SystemModstamp (e.g. a Salesforce bulk update) are
+  no longer skipped when a run stops part-way through them. The
+  high-water mark now also records the Id of the last record done at
+  that timestamp (hidden `Salesforce Settings.hwm_last_ids`), and the
+  next run resumes after it. Queries order by `SystemModstamp, Id`.
 - `resync_opportunities` and `backfill_deal_child_tables` stop cleanly
-  on a budget error instead of logging one failure per remaining deal.
-  `resync_opportunities` uses a fresh client per batch of 200, so a full
-  re-sync isn't capped by the per-tick budget, and takes `only_failed`
-  to retry just the deals marked Failed.
+  on a budget error, including one from the client's preflight, instead
+  of raising or logging one failure per remaining deal.
+  `resync_opportunities` renews its client before the per-tick budget
+  runs out, so a full re-sync isn't capped by it, and takes
+  `only_failed` to retry just the deals marked Failed.
 
 ### Changed
 - Salesforce Record Link now has a unique key on

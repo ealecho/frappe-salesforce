@@ -265,10 +265,11 @@ def resync_opportunities(
         only_failed: Only re-pull deals whose link is marked Failed (set by
             the sync when a deal fails, e.g. on a grid query).
 
-    A full run costs ~3 API calls per deal. Each batch of 200 gets a fresh
-    client, so the per-tick budget applies per batch; the per-day budget
-    still applies to the whole run. If it trips, the run stops and reports
-    ``stopped``; rerun with ``only_failed`` or the same filters later.
+    A full run costs ~3 API calls per deal. The client is renewed before it
+    reaches the per-tick budget, so that budget doesn't cap a long run; the
+    per-day budget still applies to the whole run. If it trips, the run
+    stops and reports ``stopped``; rerun with ``only_failed`` or the same
+    filters later.
     Large runs exceed a web request's timeout, so run them from a console
     or with ``bench --site <site> execute``.
     """
@@ -311,25 +312,37 @@ def resync_opportunities(
         if limit and len(sf_ids) >= limit:
             break
 
-    client = SalesforceClient()
-    syncer = OpportunitySyncer(client, frappe._dict())
-    fields = list(dict.fromkeys(["Id", "SystemModstamp", *syncer._soql_fields()]))
-    select = ", ".join(fields)
+    # Each deal costs ~3 grid queries, so one client would hit the per-tick
+    # budget a few hundred deals in. Swap in a fresh client before that
+    # happens: the per-day budget still caps the whole run.
+    per_tick = cint(
+        frappe.db.get_single_value("Salesforce Settings", "max_calls_per_tick")
+    ) or 500
+    headroom = 10
 
     processed = failed = 0
     stopped: str | None = None
-    # Batch the SF re-fetch (200 ids/query) to keep API calls down; the
-    # per-record after_upsert grid queries still cost the usual ~3 each.
-    for start in range(0, len(sf_ids), 200):
-        chunk = sf_ids[start : start + 200]
-        id_list = ", ".join(f"'{i}'" for i in chunk)
-        soql = f"SELECT {select} FROM Opportunity WHERE Id IN ({id_list})"
-        try:
-            if start:
-                # The constructor's preflight can itself trip the budget.
-                client = SalesforceClient()
-                syncer.client = client
-            for rec in client.query(soql):
+    try:
+        # Inside the try: the constructor's preflight can itself trip the
+        # budget, and the describe behind _soql_fields is an API call too.
+        syncer = OpportunitySyncer(SalesforceClient(), frappe._dict())
+        fields = list(dict.fromkeys(["Id", "SystemModstamp", *syncer._soql_fields()]))
+        select = ", ".join(fields)
+
+        def fresh_client_if_low():
+            if syncer.client.calls_this_tick >= per_tick - headroom:
+                syncer.client = SalesforceClient()
+
+        # Batch the SF re-fetch (200 ids/query) to keep API calls down.
+        for start in range(0, len(sf_ids), 200):
+            chunk = sf_ids[start : start + 200]
+            id_list = ", ".join(f"'{i}'" for i in chunk)
+            soql = f"SELECT {select} FROM Opportunity WHERE Id IN ({id_list})"
+            fresh_client_if_low()
+            # 200 records fit in one page, so swapping syncer.client below
+            # never strands this query's pagination.
+            for rec in syncer.client.query(soql):
+                fresh_client_if_low()
                 try:
                     syncer._process_record(rec)
                     frappe.db.commit()
@@ -346,9 +359,8 @@ def resync_opportunities(
                     )
                     syncer._mark_link_failed(rec.get("Id"), e)
                     frappe.db.commit()
-        except STOP_RUN_ERRORS as e:
-            stopped = str(e)
-            break
+    except STOP_RUN_ERRORS as e:
+        stopped = str(e)
 
     return {
         "ok": True,
