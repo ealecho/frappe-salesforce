@@ -361,6 +361,8 @@ def resync_opportunities(
             # never strands this query's pagination.
             for rec in syncer.client.query(soql):
                 fresh_client_if_low()
+                # Per deal: a batch can outlast the lock's TTL if calls are slow.
+                refresh_sync_lock()
                 try:
                     syncer._process_record(rec)
                     frappe.db.commit()

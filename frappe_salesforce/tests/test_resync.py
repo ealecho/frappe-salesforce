@@ -127,7 +127,7 @@ def test_resync_holds_the_sync_lock_throughout(site, lock, monkeypatch):
     result = api.resync_opportunities()
     assert result["deals_processed"] == 30
     assert all(held_while_processing)
-    assert lock["refreshed"] >= 1
+    assert lock["refreshed"] >= 30  # at least once per deal
     assert not lock["held"]
 
 

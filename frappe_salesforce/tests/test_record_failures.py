@@ -193,3 +193,53 @@ def test_last_id_ignored_once_the_mark_moves(monkeypatch):
     assert syncer._get_last_id("2026-06-29 07:40:00") == "006A"
     # An operator reset (e.g. Backfill From Date) moved the mark.
     assert syncer._get_last_id("2026-01-01 00:00:00") is None
+
+
+def _deadlock():
+    return frappe.QueryDeadlockError("(1213, 'Deadlock found when trying to get lock')")
+
+
+def test_deadlock_in_optional_after_upsert_is_not_swallowed(monkeypatch, errors):
+    syncer = _syncer(BaseSyncer, monkeypatch)
+    monkeypatch.setattr(syncer, "after_upsert", _raise(_deadlock()))
+    with pytest.raises(frappe.QueryDeadlockError):
+        syncer._process_record(_rec("001A", "2026-06-29T07:40:00Z"))
+
+
+def test_deadlock_rewinds_the_mark_to_the_last_checkpoint(monkeypatch, errors):
+    # The deadlock rolled back 006C along with 006D, so the mark must go back
+    # to the checkpoint after 006B, not stay on 006C.
+    monkeypatch.setattr(base, "HWM_CHECKPOINT_EVERY", 2)
+    records = [
+        _rec("006A", "2026-06-29T07:40:00Z"),
+        _rec("006B", "2026-06-29T07:41:00Z"),
+        _rec("006C", "2026-06-29T07:42:00Z"),
+        _rec("006D", "2026-06-29T07:43:00Z"),
+    ]
+    syncer = _syncer(BaseSyncer, monkeypatch, records)
+    events = _run_setup(monkeypatch, syncer)
+
+    def process(rec):
+        if rec["Id"] == "006D":
+            raise _deadlock()
+
+    monkeypatch.setattr(syncer, "_process_record", process)
+    with pytest.raises(frappe.QueryDeadlockError):
+        syncer.run()
+    assert events[-1] == ("hwm", "2026-06-29 07:41:00", "006B")
+    assert not any(e[0] == "failed" for e in events)
+
+
+def test_deadlock_before_any_checkpoint_keeps_the_starting_mark(monkeypatch, errors):
+    # Here the deadlock comes from fetching the next page (the usage write).
+    def records():
+        yield _rec("006A", "2026-06-29T07:40:00Z")
+        raise _deadlock()
+
+    syncer = _syncer(BaseSyncer, monkeypatch)
+    syncer.client.query = lambda soql: records()
+    events = _run_setup(monkeypatch, syncer)
+    monkeypatch.setattr(syncer, "_process_record", lambda rec: None)
+    with pytest.raises(frappe.QueryDeadlockError):
+        syncer.run()
+    assert events[-1] == ("hwm", "2026-06-01 00:00:00", None)

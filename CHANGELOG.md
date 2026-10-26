@@ -39,6 +39,17 @@
   are skipped until it finishes and catch up afterwards. Run side by
   side on 23 Oct, every tick undid the save of the deal the re-sync was
   on, failing 12 deals with `TimestampMismatchError`.
+  It renews the lock before every deal, so a slow batch can't outlast
+  the lock's TTL.
+- A database deadlock is no longer swallowed. Writing the observed API
+  usage to Salesforce Settings caught every error, including deadlocks,
+  but a deadlock rolls back the caller's whole transaction: on 23 Oct
+  that undid deal saves while the sync carried on (33 deadlocks). It now
+  reaches the caller. A sync run that hits one moves its high-water mark
+  back to the last checkpoint and stops, so the next tick redoes the
+  records that were rolled back; `resync_opportunities` marks that deal
+  Failed. The usage is now one write without a `modified` bump, so it
+  contends less with other writers of Salesforce Settings.
 
 ### Changed
 - Salesforce Record Link now has a unique key on

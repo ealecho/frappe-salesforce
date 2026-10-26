@@ -278,17 +278,22 @@ class SalesforceClient:
             return
         self._rate_limit_info = {"used": used, "limit": limit}
         # Persist for the next tick's preflight check. Best-effort — never
-        # let a write failure kill a sync.
+        # let a write failure kill a sync. One write, and no ``modified``
+        # bump: every other writer of Salesforce Settings touches that row.
         try:
             frappe.db.set_single_value(
-                "Salesforce Settings", "last_api_usage_used", used
+                "Salesforce Settings",
+                {
+                    "last_api_usage_used": used,
+                    "last_api_usage_limit": limit,
+                    "last_api_usage_at": now_datetime(),
+                },
+                update_modified=False,
             )
-            frappe.db.set_single_value(
-                "Salesforce Settings", "last_api_usage_limit", limit
-            )
-            frappe.db.set_single_value(
-                "Salesforce Settings", "last_api_usage_at", now_datetime()
-            )
+        except frappe.QueryDeadlockError:
+            # MariaDB has rolled back the caller's whole transaction; carrying
+            # on would let it think its earlier writes were still there.
+            raise
         except Exception:
             frappe.log_error(
                 title="SF sync: failed to persist last_api_usage",

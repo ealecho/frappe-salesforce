@@ -29,6 +29,12 @@ HWM_CHECKPOINT_EVERY = 50
 #: its income-year / payment grids, then never retried.
 STOP_RUN_ERRORS = (SalesforceBudgetExceeded, SalesforceRateLimitError)
 
+#: A deadlock makes MariaDB roll back the whole transaction, not just the
+#: statement, so everything since the last commit is gone. Never swallow it
+#: per record: on 2026-10-23 a swallowed deadlock undid deal saves while the
+#: sync carried on as if they had been written.
+TRANSACTION_LOST_ERRORS = (frappe.QueryDeadlockError,)
+
 #: ``Salesforce Settings`` field holding, per high-water-mark field, the Id
 #: of the last record synced at exactly that timestamp (see
 #: ``build_incremental_query(after_id=...)``).
@@ -150,6 +156,8 @@ class BaseSyncer:
         )
         self.log.soql = soql
         new_hwm = get_datetime(since).replace(tzinfo=None) if since else None
+        # The mark as last committed: where a lost transaction rewinds to.
+        committed = (new_hwm, last_id)
         calls_before = self.client.calls_this_tick
         processed_since_checkpoint = 0
         auth_failures = 0
@@ -203,6 +211,7 @@ class BaseSyncer:
                     if processed_since_checkpoint >= HWM_CHECKPOINT_EVERY:
                         self._set_high_water_mark(new_hwm, last_id)
                         frappe.db.commit()
+                        committed = (new_hwm, last_id)
                         processed_since_checkpoint = 0
                 except STOP_RUN_ERRORS:
                     # Undo the half-done record and end the run. The mark in
@@ -211,6 +220,8 @@ class BaseSyncer:
                     # again even if it shares that timestamp.
                     _rollback_record()
                     raise
+                except TRANSACTION_LOST_ERRORS:
+                    raise  # not this record's fault; handled below
                 except Exception as e:
                     # Roll back before logging: Error Log rows are written in
                     # this same transaction.
@@ -221,6 +232,12 @@ class BaseSyncer:
                         message=frappe.get_traceback() or str(e),
                     )
                     self._mark_link_failed(rec.get("Id"), e)
+        except TRANSACTION_LOST_ERRORS:
+            # The records since the last checkpoint were rolled back with the
+            # transaction, so put the mark back there and end the run; the
+            # next tick redoes them.
+            new_hwm, last_id = committed
+            raise
         finally:
             # Always record API calls spent by this syncer and persist the
             # latest HWM we safely reached — even if the loop aborted due
@@ -257,7 +274,7 @@ class BaseSyncer:
             if doc is not None:
                 try:
                     self.after_upsert(rec, doc)
-                except STOP_RUN_ERRORS:
+                except (*STOP_RUN_ERRORS, *TRANSACTION_LOST_ERRORS):
                     raise
                 except Exception as e:
                     if self.after_upsert_required:
