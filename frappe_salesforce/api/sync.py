@@ -271,13 +271,19 @@ def resync_opportunities(
     stops and reports ``stopped``; rerun with ``only_failed`` or the same
     filters later.
     Large runs exceed a web request's timeout, so run them from a console
-    or with ``bench --site <site> execute``.
+    or with ``bench --site <site> execute``. The run holds the scheduled
+    sync's lock, so no ticks run until it finishes.
     """
     frappe.only_for("System Manager")
 
     from frappe_salesforce.salesforce.client import SalesforceClient
     from frappe_salesforce.sync.base import STOP_RUN_ERRORS
     from frappe_salesforce.sync.opportunities import OpportunitySyncer
+    from frappe_salesforce.tasks.incremental import (
+        _release_sync_lock,
+        acquire_sync_lock_waiting,
+        refresh_sync_lock,
+    )
 
     if limit is not None:
         limit = int(limit)
@@ -322,6 +328,17 @@ def resync_opportunities(
 
     processed = failed = 0
     stopped: str | None = None
+    # Hold the scheduled sync's lock for the whole run: ticks are skipped
+    # until it's done and catch up from their high-water marks afterwards.
+    if not acquire_sync_lock_waiting():
+        return {
+            "ok": False,
+            "deals_matched": len(sf_ids),
+            "deals_processed": 0,
+            "failed": 0,
+            "stopped": "Another Salesforce sync is running; try again shortly.",
+            "account_name": account_name,
+        }
     try:
         # Inside the try: the constructor's preflight can itself trip the
         # budget, and the describe behind _soql_fields is an API call too.
@@ -339,6 +356,7 @@ def resync_opportunities(
             id_list = ", ".join(f"'{i}'" for i in chunk)
             soql = f"SELECT {select} FROM Opportunity WHERE Id IN ({id_list})"
             fresh_client_if_low()
+            refresh_sync_lock()
             # 200 records fit in one page, so swapping syncer.client below
             # never strands this query's pagination.
             for rec in syncer.client.query(soql):
@@ -361,6 +379,8 @@ def resync_opportunities(
                     frappe.db.commit()
     except STOP_RUN_ERRORS as e:
         stopped = str(e)
+    finally:
+        _release_sync_lock()
 
     return {
         "ok": True,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import frappe
 from frappe.utils import now_datetime
 
@@ -58,6 +60,35 @@ def _release_sync_lock() -> None:
         frappe.cache().delete(_sync_lock_key())
     except Exception:
         # TTL will reclaim it; nothing to do.
+        pass
+
+
+def acquire_sync_lock_waiting(timeout: int = 120, poll: int = 5) -> bool:
+    """Claim the sync lock for a manual run, waiting out a tick in progress.
+
+    A long manual run (``resync_opportunities``) must hold the same lock as
+    the scheduled sync. Run side by side, both write ``Salesforce Settings``
+    on every API call, and on 2026-10-23 that undid the re-sync's deal save
+    each time a tick ran, failing 12 deals with ``TimestampMismatchError``.
+    A tick takes seconds, so waiting briefly is enough. Returns False if the
+    lock is still held after ``timeout`` seconds.
+    """
+    deadline = time.monotonic() + timeout
+    while not _acquire_sync_lock():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(poll)
+    return True
+
+
+def refresh_sync_lock() -> None:
+    """Push the lock's expiry back by ``SYNC_LOCK_TTL``.
+
+    A manual run can outlast the TTL, so it calls this as it goes.
+    """
+    try:
+        frappe.cache().expire(_sync_lock_key(), SYNC_LOCK_TTL)
+    except Exception:
         pass
 
 

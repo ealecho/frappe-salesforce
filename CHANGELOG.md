@@ -34,6 +34,11 @@
   always read 0 and the budget never tripped. Only Salesforce's own 90%
   org-quota abort was guarding the daily limit. The counter is now
   per-site.
+- `resync_opportunities` now holds the scheduled sync's lock for the
+  whole run (waiting up to 2 minutes for a tick in progress), so ticks
+  are skipped until it finishes and catch up afterwards. Run side by
+  side on 23 Oct, every tick undid the save of the deal the re-sync was
+  on, failing 12 deals with `TimestampMismatchError`.
 
 ### Changed
 - Salesforce Record Link now has a unique key on
