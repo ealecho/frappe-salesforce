@@ -39,7 +39,8 @@
   "last_sync_opportunity",
   "last_sync_task",
   "last_sync_event",
-  "last_sync_email_message"
+  "last_sync_email_message",
+  "hwm_last_ids"
  ],
  "fields": [
   {"fieldname": "enabled", "fieldtype": "Check", "label": "Enabled", "default": "0"},
@@ -77,7 +78,8 @@
   {"fieldname": "last_sync_opportunity", "fieldtype": "Datetime", "label": "Last Sync: Opportunity"},
   {"fieldname": "last_sync_task", "fieldtype": "Datetime", "label": "Last Sync: Task"},
   {"fieldname": "last_sync_event", "fieldtype": "Datetime", "label": "Last Sync: Event"},
-  {"fieldname": "last_sync_email_message", "fieldtype": "Datetime", "label": "Last Sync: Email Message"}
+  {"fieldname": "last_sync_email_message", "fieldtype": "Datetime", "label": "Last Sync: Email Message"},
+  {"fieldname": "hwm_last_ids", "fieldtype": "Long Text", "label": "High-Water Mark Last Ids", "read_only": 1, "hidden": 1, "description": "JSON: per high-water-mark field, the Salesforce Id of the last record synced at exactly that timestamp, so records sharing it aren't skipped. Ignored once the mark changes."}
  ],
  "issingle": 1,
  "links": [],

@@ -278,17 +278,22 @@ class SalesforceClient:
             return
         self._rate_limit_info = {"used": used, "limit": limit}
         # Persist for the next tick's preflight check. Best-effort — never
-        # let a write failure kill a sync.
+        # let a write failure kill a sync. One write, and no ``modified``
+        # bump: every other writer of Salesforce Settings touches that row.
         try:
             frappe.db.set_single_value(
-                "Salesforce Settings", "last_api_usage_used", used
+                "Salesforce Settings",
+                {
+                    "last_api_usage_used": used,
+                    "last_api_usage_limit": limit,
+                    "last_api_usage_at": now_datetime(),
+                },
+                update_modified=False,
             )
-            frappe.db.set_single_value(
-                "Salesforce Settings", "last_api_usage_limit", limit
-            )
-            frappe.db.set_single_value(
-                "Salesforce Settings", "last_api_usage_at", now_datetime()
-            )
+        except frappe.QueryDeadlockError:
+            # MariaDB has rolled back the caller's whole transaction; carrying
+            # on would let it think its earlier writes were still there.
+            raise
         except Exception:
             frappe.log_error(
                 title="SF sync: failed to persist last_api_usage",
@@ -311,16 +316,20 @@ class SalesforceClient:
 # ----------------------------------------------------------------------
 # Daily counter (app-level, UTC-day rollover)
 # ----------------------------------------------------------------------
-def _daily_counter_key() -> str:
-    return _DAILY_COUNTER_CACHE_KEY.format(
-        date=datetime.now(timezone.utc).strftime("%Y-%m-%d")
+def _daily_counter_key() -> bytes:
+    # Read and written as a raw Redis integer under the site-prefixed key.
+    # cache.get_value adds the prefix and unpickles but cache.incr does
+    # neither, so pairing them read 0 forever and the budget never tripped.
+    return frappe.cache.make_key(
+        _DAILY_COUNTER_CACHE_KEY.format(
+            date=datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        )
     )
 
 
 def _daily_counter_get() -> int:
     try:
-        val = frappe.cache.get_value(_daily_counter_key())
-        return int(val) if val else 0
+        return int(frappe.cache.get(_daily_counter_key()) or 0)
     except Exception:
         return 0
 
@@ -328,19 +337,13 @@ def _daily_counter_get() -> int:
 def _daily_counter_incr() -> int:
     key = _daily_counter_key()
     try:
-        # 36h expiry covers the UTC rollover edge comfortably.
         new = frappe.cache.incr(key)
         if new == 1:
+            # 36h expiry covers the UTC rollover edge comfortably.
             frappe.cache.expire(key, 36 * 60 * 60)
         return int(new)
     except Exception:
-        # Cache backends without incr — fall back to get/set.
-        cur = _daily_counter_get() + 1
-        try:
-            frappe.cache.set_value(key, cur, expires_in_sec=36 * 60 * 60)
-        except Exception:
-            pass
-        return cur
+        return _daily_counter_get()
 
 
 def _safe_json(resp: requests.Response):

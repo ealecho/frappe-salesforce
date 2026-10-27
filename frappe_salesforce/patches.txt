@@ -22,3 +22,5 @@ frappe_salesforce.patches.v0_1_0.remap_closed_won_deals_and_backfill_grants
 frappe_salesforce.patches.v0_1_0.backfill_org_general_enquiries_email
 frappe_salesforce.patches.v0_1_0.backfill_email_messages
 frappe_salesforce.patches.v0_1_0.backfill_email_messages #2 rerun after custom-field race fix
+frappe_salesforce.patches.v0_1_0.dedupe_record_links
+frappe_salesforce.patches.v0_1_0.widen_email_bounced_reason

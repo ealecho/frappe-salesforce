@@ -8,7 +8,7 @@ from typing import Any
 import frappe
 from frappe.utils import get_datetime, now_datetime
 
-from .base import BaseSyncer
+from .base import BaseSyncer, _persist_tolerating_known_hook_bugs
 from .transforms import map_contact
 
 #: Salesforce ``Income_year__c`` fields pulled to populate the CRM Deal
@@ -71,6 +71,9 @@ class OpportunitySyncer(BaseSyncer):
     high_water_field = "last_sync_opportunity"
     order_in_sync = 50
     extra_soql_fields = ("IsClosed", "CloseDate")
+    # A deal saved without its grids looks complete but isn't, and the HWM
+    # moves past it, so a grid failure must fail (and roll back) the deal.
+    after_upsert_required = True
 
     def enrich_values(
         self, rec: dict[str, Any], values: dict[str, Any]
@@ -148,7 +151,12 @@ class OpportunitySyncer(BaseSyncer):
         if has_budget:
             changed |= self._sync_budget(opp_id, doc)
         if changed:
-            doc.save(ignore_permissions=True)
+            # The grids are written before on_update runs, so the known
+            # frappe_grants_budgeting hook bugs don't lose them; tolerate
+            # those the same way the main deal save does.
+            _persist_tolerating_known_hook_bugs(
+                lambda: doc.save(ignore_permissions=True)
+            )
 
     def _grant_child_tables_present(self) -> tuple[bool, bool, bool]:
         """Whether the CRM Deal grant child tables exist on this bench.
@@ -182,9 +190,21 @@ class OpportunitySyncer(BaseSyncer):
             f"SELECT {', '.join(PAYMENT_FIELDS)} FROM npe01__OppPayment__c "
             f"WHERE npe01__Opportunity__c = '{opp_id}'"
         )
-        rows = [build_payment_row(r, today) for r in self.client.query(soql)]
+        written_off_status = self._written_off_status()
+        rows = [
+            build_payment_row(r, today, written_off_status)
+            for r in self.client.query(soql)
+        ]
         doc.set("custom_payment_schedule", [r for r in rows if r is not None])
         return True
+
+    def _written_off_status(self) -> str:
+        """Cached per syncer instance; see ``written_off_payment_status``."""
+        cached = getattr(self, "_written_off_status_cache", None)
+        if cached is None:
+            cached = written_off_payment_status()
+            self._written_off_status_cache = cached
+        return cached
 
     def _sync_budget(self, opp_id: str, doc) -> bool:
         rows = [build_budget_row(r) for r in self.client.query(budget_soql(opp_id))]
@@ -195,6 +215,22 @@ class OpportunitySyncer(BaseSyncer):
 # ----------------------------------------------------------------------
 # Pure row builders (no Frappe / network deps — unit-testable)
 # ----------------------------------------------------------------------
+def written_off_payment_status() -> str:
+    """The CRM Grant Payment status to use for a written-off SF payment.
+
+    peas_crm added a "Written Off" option (version-15, 2026-10-23). Sites
+    that haven't migrated to it yet only have Pending / Received / Overdue /
+    Partially Received, and sending an unknown option fails the deal save,
+    so fall back to the old "Overdue" there.
+    """
+    try:
+        df = frappe.get_meta("CRM Grant Payment").get_field("payment_status")
+    except Exception:
+        return "Overdue"
+    options = (df.options or "").split("\n") if df else []
+    return "Written Off" if "Written Off" in options else "Overdue"
+
+
 def sf_closed_date(rec: dict[str, Any]) -> str | None:
     """The SF CloseDate as ``YYYY-MM-DD`` for a closed Opportunity, else None."""
     if not (rec.get("IsClosed") and rec.get("CloseDate")):
@@ -227,7 +263,9 @@ def build_income_year_row(rec: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_payment_row(
-    rec: dict[str, Any], today: date | None = None
+    rec: dict[str, Any],
+    today: date | None = None,
+    written_off_status: str = "Written Off",
 ) -> dict[str, Any] | None:
     """Map one ``npe01__OppPayment__c`` record to a CRM Grant Payment row.
 
@@ -256,7 +294,9 @@ def build_payment_row(
         "amount_expected": amount,
         "payment_received_date": payment_date if paid else None,
         "amount_received": amount if paid else None,
-        "payment_status": derive_payment_status(paid, written_off, scheduled, today),
+        "payment_status": derive_payment_status(
+            paid, written_off, scheduled, today, written_off_status
+        ),
     }
 
 
@@ -292,17 +332,19 @@ def derive_payment_status(
     written_off: bool,
     scheduled_date: Any,
     today: date | None,
+    written_off_status: str = "Written Off",
 ) -> str:
     """Collapse SF payment booleans into the CRM Grant Payment picklist.
 
-    Picklist options are Pending / Received / Overdue / Partially Received.
-    Salesforce's "Written Off" has no equivalent option, so it is folded
-    into Overdue.
+    Picklist options are Pending / Received / Overdue / Partially Received /
+    Written Off. ``written_off_status`` lets a site without the "Written
+    Off" option fold write-offs into "Overdue" instead (see
+    ``written_off_payment_status``).
     """
     if paid:
         return "Received"
     if written_off:
-        return "Overdue"
+        return written_off_status
     sched = _coerce_date(scheduled_date)
     if sched and today and sched < today:
         return "Overdue"

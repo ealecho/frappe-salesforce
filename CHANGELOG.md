@@ -1,5 +1,82 @@
 # Changelog
 
+## [0.1.18]
+
+### Fixed
+- Deals no longer get saved without their income years, payments or
+  budget. When the API budget ran out on a grid query, the error was
+  swallowed and the deal was still saved and marked Synced; the
+  high-water mark then moved past it, so it was never retried (the
+  110 deals in tab 2 of the 22 Oct list). Budget and quota errors now
+  end the run with that deal rolled back, and the next tick retries it.
+  Any other grid failure fails just that deal.
+- A failed record is now rolled back completely (savepoint per record),
+  including its Salesforce Record Link, and its link is marked Failed
+  with the error. Previously a failed record could leave a blank link
+  behind.
+- Written-off Salesforce payments sync as "Written Off" instead of
+  "Overdue" once peas_crm has that option; sites without it keep
+  "Overdue".
+- Records sharing a SystemModstamp (e.g. a Salesforce bulk update) are
+  no longer skipped when a run stops part-way through them. The
+  high-water mark now also records the Id of the last record done at
+  that timestamp (hidden `Salesforce Settings.hwm_last_ids`), and the
+  next run resumes after it. Queries order by `SystemModstamp, Id`.
+- `resync_opportunities` and `backfill_deal_child_tables` stop cleanly
+  on a budget error, including one from the client's preflight, instead
+  of raising or logging one failure per remaining deal.
+  `resync_opportunities` renews its client before the per-tick budget
+  runs out, so a full re-sync isn't capped by it, and takes
+  `only_failed` to retry just the deals marked Failed.
+- The per-day API budget (`max_calls_per_day`) now works. Its counter
+  was incremented under a raw Redis key but read through
+  `cache.get_value`, which adds the site prefix and unpickles, so it
+  always read 0 and the budget never tripped. Only Salesforce's own 90%
+  org-quota abort was guarding the daily limit. The counter is now
+  per-site.
+- `resync_opportunities` now holds the scheduled sync's lock for the
+  whole run (waiting up to 2 minutes for a tick in progress), so ticks
+  are skipped until it finishes and catch up afterwards. Run side by
+  side on 23 Oct, every tick undid the save of the deal the re-sync was
+  on, failing 12 deals with `TimestampMismatchError`.
+  It renews the lock before every deal, so a slow batch can't outlast
+  the lock's TTL.
+- A database deadlock is no longer swallowed. Writing the observed API
+  usage to Salesforce Settings caught every error, including deadlocks,
+  but a deadlock rolls back the caller's whole transaction: on 23 Oct
+  that undid deal saves while the sync carried on (33 deadlocks). It now
+  reaches the caller. A sync run that hits one moves its high-water mark
+  back to the last checkpoint and stops, so the next tick redoes the
+  records that were rolled back; `resync_opportunities` marks that deal
+  Failed. The same applies when flagging a failed record's link hits a
+  deadlock. The usage is now one write without a `modified` bump, so it
+  contends less with other writers of Salesforce Settings.
+- An invalid email address no longer keeps a record out of CRM. Frappe
+  refuses addresses like `joe..philp.hs@live.co.uk`, which failed the
+  whole Contact or Lead (4 contacts and a lead on 27 Oct). The sync now
+  drops the address, saves the record without it and logs it with the
+  Salesforce Id. A value holding several addresses keeps the valid ones.
+  Plain-text `custom_sf_*` email copies are untouched.
+- `custom_sf_email_bounced_reason` on Contact and CRM Lead is now Small
+  Text (patch `widen_email_bounced_reason`). Bounce messages carry
+  `<addresses>`: the sync truncated them to 140 chars, then the save
+  escaped `<` to `&lt;` and the value overflowed again.
+
+### Added
+- `reload_unlinked_records` loads the Accounts, Contacts and Leads whose
+  Salesforce Record Link points at nothing, then re-syncs the
+  Opportunities of those accounts and contacts. The overlapping first
+  loads on 14 May left such links marked Synced with no record behind
+  them (77 Accounts, 1,522 Contacts and 259 Leads on staging, all still
+  live in Salesforce), and the high-water marks had moved past them. It
+  holds the sync lock and shares its loop with `resync_opportunities`.
+
+### Changed
+- Salesforce Record Link now has a unique key on
+  `(salesforce_object, salesforce_id)`. A migrate patch first deletes
+  the duplicate links (from the overlapping 14 May runs), keeping the
+  one whose Frappe record exists.
+
 ## [0.1.17]
 
 ### Fixed

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import frappe
-from frappe.utils import now_datetime
+from frappe.utils import cint, now_datetime
 
 
 @frappe.whitelist()
@@ -125,7 +125,9 @@ def backfill_deal_child_tables(account_name: str | None = None, limit: int | Non
         build_payment_row,
         INCOME_YEAR_FIELDS,
         PAYMENT_FIELDS,
+        written_off_payment_status,
     )
+    from frappe_salesforce.sync.base import STOP_RUN_ERRORS
 
     if limit is not None:
         limit = int(limit)
@@ -159,7 +161,9 @@ def backfill_deal_child_tables(account_name: str | None = None, limit: int | Non
 
     client = SalesforceClient()
     today = now_datetime().date()
+    written_off_status = written_off_payment_status()
     processed = skipped = failed = 0
+    stopped: str | None = None
 
     for link in links:
         deal_name = link.get("frappe_name")
@@ -196,7 +200,8 @@ def backfill_deal_child_tables(account_name: str | None = None, limit: int | Non
                     [
                         row
                         for row in (
-                            build_payment_row(r, today) for r in client.query(pay_soql)
+                            build_payment_row(r, today, written_off_status)
+                            for r in client.query(pay_soql)
                         )
                         if row is not None
                     ],
@@ -209,6 +214,12 @@ def backfill_deal_child_tables(account_name: str | None = None, limit: int | Non
             doc.save(ignore_permissions=True)
             frappe.db.commit()
             processed += 1
+        except STOP_RUN_ERRORS as e:
+            # Out of API budget: every remaining deal would fail the same
+            # way, so stop rather than log thousands of identical errors.
+            frappe.db.rollback()
+            stopped = str(e)
+            break
         except Exception as e:
             failed += 1
             frappe.db.rollback()
@@ -224,12 +235,17 @@ def backfill_deal_child_tables(account_name: str | None = None, limit: int | Non
         "deals_processed": processed,
         "skipped": skipped,
         "failed": failed,
+        "stopped": stopped,
         "account_name": account_name,
     }
 
 
 @frappe.whitelist()
-def resync_opportunities(account_name: str | None = None, limit: int | None = None):
+def resync_opportunities(
+    account_name: str | None = None,
+    limit: int | None = None,
+    only_failed: bool = False,
+):
     """Re-pull Opportunities through the full mapping to refresh scalar fields.
 
     Unlike ``backfill_deal_child_tables`` (which only rebuilds the grids),
@@ -246,18 +262,36 @@ def resync_opportunities(account_name: str | None = None, limit: int | None = No
         account_name: Optional CRM Organization name to restrict to one
             account's deals (e.g. ``"John Bothamley"``).
         limit: Optional cap on the number of deals processed.
+        only_failed: Only re-pull deals whose link is marked Failed (set by
+            the sync when a deal fails, e.g. on a grid query).
+
+    A full run costs ~3 API calls per deal. The client is renewed before it
+    reaches the per-tick budget, so that budget doesn't cap a long run; the
+    per-day budget still applies to the whole run. If it trips, the run
+    stops and reports ``stopped``; rerun with ``only_failed`` or the same
+    filters later.
+    Large runs exceed a web request's timeout, so run them from a console
+    or with ``bench --site <site> execute``. The run holds the scheduled
+    sync's lock, so no ticks run until it finishes.
     """
     frappe.only_for("System Manager")
 
-    from frappe_salesforce.salesforce.client import SalesforceClient
     from frappe_salesforce.sync.opportunities import OpportunitySyncer
+    from frappe_salesforce.tasks.incremental import (
+        _release_sync_lock,
+        acquire_sync_lock_waiting,
+    )
 
     if limit is not None:
         limit = int(limit)
+    only_failed = cint(only_failed)
 
+    filters = {"salesforce_object": "Opportunity", "frappe_doctype": "CRM Deal"}
+    if only_failed:
+        filters["sync_status"] = "Failed"
     links = frappe.get_all(
         "Salesforce Record Link",
-        filters={"salesforce_object": "Opportunity", "frappe_doctype": "CRM Deal"},
+        filters=filters,
         fields=["salesforce_id", "frappe_name"],
     )
 
@@ -266,9 +300,12 @@ def resync_opportunities(account_name: str | None = None, limit: int | None = No
     for link in links:
         deal_name = link.get("frappe_name")
         sf_id = link.get("salesforce_id")
-        if not deal_name or not sf_id:
+        if not sf_id:
             continue
-        if not frappe.db.exists("CRM Deal", deal_name):
+        has_deal = bool(deal_name) and frappe.db.exists("CRM Deal", deal_name)
+        # A failed link may have no deal yet (it failed on first insert);
+        # re-pulling it creates one. Otherwise only refresh existing deals.
+        if not has_deal and not (only_failed and not account_name):
             continue
         if account_name:
             org = frappe.db.get_value("CRM Deal", deal_name, "organization")
@@ -278,38 +315,172 @@ def resync_opportunities(account_name: str | None = None, limit: int | None = No
         if limit and len(sf_ids) >= limit:
             break
 
-    client = SalesforceClient()
-    syncer = OpportunitySyncer(client, frappe._dict())
-    fields = list(dict.fromkeys(["Id", "SystemModstamp", *syncer._soql_fields()]))
-    select = ", ".join(fields)
-
-    processed = failed = 0
-    # Batch the SF re-fetch (200 ids/query) to keep API calls down; the
-    # per-record after_upsert grid queries still cost the usual ~3 each.
-    for start in range(0, len(sf_ids), 200):
-        chunk = sf_ids[start : start + 200]
-        id_list = ", ".join(f"'{i}'" for i in chunk)
-        soql = f"SELECT {select} FROM Opportunity WHERE Id IN ({id_list})"
-        for rec in client.query(soql):
-            try:
-                syncer._process_record(rec)
-                frappe.db.commit()
-                processed += 1
-            except Exception as e:
-                failed += 1
-                frappe.db.rollback()
-                frappe.log_error(
-                    title=f"SF resync Opportunity {rec.get('Id')}",
-                    message=frappe.get_traceback() or str(e),
-                )
+    # Hold the scheduled sync's lock for the whole run: ticks are skipped
+    # until it's done and catch up from their high-water marks afterwards.
+    if not acquire_sync_lock_waiting():
+        return {
+            "ok": False,
+            "deals_matched": len(sf_ids),
+            "deals_processed": 0,
+            "failed": 0,
+            "stopped": "Another Salesforce sync is running; try again shortly.",
+            "account_name": account_name,
+        }
+    try:
+        processed, failed, stopped = _resync_records(OpportunitySyncer, sf_ids)
+    finally:
+        _release_sync_lock()
 
     return {
         "ok": True,
         "deals_matched": len(sf_ids),
         "deals_processed": processed,
         "failed": failed,
+        "stopped": stopped,
         "account_name": account_name,
     }
+
+
+@frappe.whitelist()
+def reload_unlinked_records():
+    """Load the Accounts, Contacts and Leads whose link points at nothing.
+
+    On 2026-05-14 two overlapping first loads left links marked Synced with
+    no Frappe record behind them (77 Accounts, 1,522 Contacts and 259 Leads
+    on staging, all still live in Salesforce). The high-water marks had
+    moved past them, so they were never retried. This re-pulls just those
+    records, Accounts first so Contacts can link to their organisation,
+    then re-syncs the Opportunities whose account or contact was among them
+    so those deals pick up their organisation and contact.
+
+    Users are left out: they are link-only, matched to existing users and
+    never created, so a blank User link just means no matching user.
+    Holds the scheduled sync's lock, like ``resync_opportunities``; run it
+    from a console or the System Console's ``frappe.enqueue``.
+    """
+    frappe.only_for("System Manager")
+
+    from frappe_salesforce.salesforce.client import SalesforceClient
+    from frappe_salesforce.sync.accounts import AccountSyncer
+    from frappe_salesforce.sync.base import STOP_RUN_ERRORS
+    from frappe_salesforce.sync.contacts import ContactSyncer
+    from frappe_salesforce.sync.leads import LeadSyncer
+    from frappe_salesforce.sync.opportunities import OpportunitySyncer
+    from frappe_salesforce.tasks.incremental import (
+        _release_sync_lock,
+        acquire_sync_lock_waiting,
+    )
+
+    result: dict[str, Any] = {"ok": True, "stopped": None}
+    if not acquire_sync_lock_waiting():
+        result.update(ok=False, stopped="Another Salesforce sync is running; try again shortly.")
+        return result
+    try:
+        reloaded: dict[str, list[str]] = {}
+        for syncer_cls in (AccountSyncer, ContactSyncer, LeadSyncer):
+            obj = syncer_cls.salesforce_object
+            sf_ids = frappe.get_all(
+                "Salesforce Record Link",
+                filters={"salesforce_object": obj, "frappe_name": ["is", "not set"]},
+                pluck="salesforce_id",
+            )
+            reloaded[obj] = sf_ids
+            processed, failed, stopped = _resync_records(syncer_cls, sf_ids)
+            result[obj] = {"matched": len(sf_ids), "processed": processed, "failed": failed}
+            if stopped:
+                result["stopped"] = stopped
+                return result
+
+        opp_ids: list[str] = []
+        try:
+            client = SalesforceClient()
+            for field, ids in (("AccountId", reloaded["Account"]), ("ContactId", reloaded["Contact"])):
+                for start in range(0, len(ids), 200):
+                    id_list = ", ".join(f"'{i}'" for i in ids[start : start + 200])
+                    soql = f"SELECT Id FROM Opportunity WHERE {field} IN ({id_list})"
+                    opp_ids.extend(r["Id"] for r in client.query(soql))
+        except STOP_RUN_ERRORS as e:
+            result["stopped"] = str(e)
+            return result
+        opp_ids = list(dict.fromkeys(opp_ids))
+        processed, failed, stopped = _resync_records(OpportunitySyncer, opp_ids)
+        result["Opportunity"] = {"matched": len(opp_ids), "processed": processed, "failed": failed}
+        result["stopped"] = stopped
+    finally:
+        _release_sync_lock()
+    return result
+
+
+def _resync_records(syncer_cls, sf_ids: list[str]) -> tuple[int, int, str | None]:
+    """Re-pull ``sf_ids`` through ``syncer_cls``'s full mapping.
+
+    The caller holds the sync lock. Records are fetched 200 per query and
+    each commits on its own; a failed one is rolled back, logged and its
+    link marked Failed. A budget or quota error ends the run and is
+    returned as ``stopped``. Returns ``(processed, failed, stopped)``.
+    """
+    from frappe_salesforce.salesforce.client import SalesforceClient
+    from frappe_salesforce.sync.base import STOP_RUN_ERRORS
+    from frappe_salesforce.tasks.incremental import refresh_sync_lock
+
+    processed = failed = 0
+    if not sf_ids:
+        return processed, failed, None
+
+    # A deal costs ~3 grid queries, so one client would hit the per-tick
+    # budget a few hundred deals in. Swap in a fresh client before that
+    # happens: the per-day budget still caps the whole run.
+    per_tick = cint(
+        frappe.db.get_single_value("Salesforce Settings", "max_calls_per_tick")
+    ) or 500
+    headroom = 10
+
+    try:
+        # Inside the try: the constructor's preflight can itself trip the
+        # budget, and the describe behind _soql_fields is an API call too.
+        syncer = syncer_cls(SalesforceClient(), frappe._dict())
+        obj = syncer.salesforce_object
+        fields = list(dict.fromkeys(["Id", "SystemModstamp", *syncer._soql_fields()]))
+        select = ", ".join(fields)
+        # The syncer's own filter still applies (e.g. active users only).
+        where = f"({syncer.extra_where}) AND " if syncer.extra_where else ""
+
+        def fresh_client_if_low():
+            if syncer.client.calls_this_tick >= per_tick - headroom:
+                syncer.client = SalesforceClient()
+
+        # Batch the SF re-fetch (200 ids/query) to keep API calls down.
+        for start in range(0, len(sf_ids), 200):
+            chunk = sf_ids[start : start + 200]
+            id_list = ", ".join(f"'{i}'" for i in chunk)
+            soql = f"SELECT {select} FROM {obj} WHERE {where}Id IN ({id_list})"
+            fresh_client_if_low()
+            refresh_sync_lock()
+            # 200 records fit in one page, so swapping syncer.client below
+            # never strands this query's pagination.
+            for rec in syncer.client.query(soql):
+                fresh_client_if_low()
+                # Per record: a batch can outlast the lock's TTL if calls are slow.
+                refresh_sync_lock()
+                try:
+                    syncer._process_record(rec)
+                    frappe.db.commit()
+                    processed += 1
+                except STOP_RUN_ERRORS:
+                    frappe.db.rollback()
+                    raise
+                except Exception as e:
+                    failed += 1
+                    frappe.db.rollback()
+                    frappe.log_error(
+                        title=f"SF resync {obj} {rec.get('Id')}",
+                        message=frappe.get_traceback() or str(e),
+                    )
+                    syncer._mark_link_failed(rec.get("Id"), e)
+                    frappe.db.commit()
+    except STOP_RUN_ERRORS as e:
+        return processed, failed, str(e)
+    return processed, failed, None
 
 
 def _count(client, sobject: str, where: str | None = None) -> int:

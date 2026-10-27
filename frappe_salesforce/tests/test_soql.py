@@ -67,3 +67,17 @@ def test_build_incremental_query_with_extra_where():
         extra_where="IsConverted = false",
     )
     assert "(IsConverted = false)" in q
+
+
+def test_build_incremental_query_resumes_within_a_timestamp():
+    q = build_incremental_query(
+        "Opportunity",
+        ["Name"],
+        datetime(2026, 6, 29, 7, 40, tzinfo=timezone.utc),
+        after_id="006D000000AAAAAIA1",
+    )
+    assert (
+        "(SystemModstamp > 2026-06-29T07:40:00Z OR "
+        "(SystemModstamp = 2026-06-29T07:40:00Z AND Id > '006D000000AAAAAIA1'))"
+    ) in q
+    assert q.endswith("ORDER BY SystemModstamp ASC, Id ASC")

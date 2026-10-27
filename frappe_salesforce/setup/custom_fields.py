@@ -263,7 +263,9 @@ CONTACT_FIELDS: list[dict] = [
     _check("custom_sf_do_not_call", "SF Do Not Call"),
     _check("custom_sf_opted_out_email", "SF Opted Out of Email"),
     _check("custom_sf_opted_out_fax", "SF Opted Out of Fax"),
-    _data("custom_sf_email_bounced_reason", "SF Email Bounced Reason"),
+    # Bounce messages run past 140 chars and carry <addresses>, which the
+    # save escapes to &lt;...&gt; after truncation, so Data overflows.
+    _small_text("custom_sf_email_bounced_reason", "SF Email Bounced Reason"),
     _datetime("custom_sf_email_bounced_date", "SF Email Bounced Date"),
     _check("custom_sf_is_email_bounced", "SF Is Email Bounced"),
     _data("custom_sf_jigsaw", "SF Jigsaw"),
@@ -375,7 +377,9 @@ CRM_LEAD_FIELDS: list[dict] = [
     _data("custom_sf_record_type", "SF Record Type ID"),
     _data("custom_sf_jigsaw", "SF Jigsaw"),
     _data("custom_sf_jigsaw_contact_id", "SF Jigsaw Contact ID"),
-    _data("custom_sf_email_bounced_reason", "SF Email Bounced Reason"),
+    # Bounce messages run past 140 chars and carry <addresses>, which the
+    # save escapes to &lt;...&gt; after truncation, so Data overflows.
+    _small_text("custom_sf_email_bounced_reason", "SF Email Bounced Reason"),
     _datetime("custom_sf_email_bounced_date", "SF Email Bounced Date"),
     _data("custom_sf_individual_id", "SF Individual ID"),
     _data("custom_sf_preferred_email", "SF Preferred Email"),

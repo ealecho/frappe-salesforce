@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, ClassVar
 
 import frappe
-from frappe.utils import get_datetime, now_datetime
+from frappe.utils import get_datetime, now_datetime, split_emails, validate_email_address
 
 from frappe_salesforce.salesforce.client import SalesforceClient
-from frappe_salesforce.salesforce.exceptions import SalesforceAPIError
+from frappe_salesforce.salesforce.exceptions import (
+    SalesforceAPIError,
+    SalesforceBudgetExceeded,
+    SalesforceRateLimitError,
+)
 from frappe_salesforce.salesforce.soql import build_incremental_query
 
 from .transforms import apply_transform
@@ -16,6 +21,28 @@ from .transforms import apply_transform
 #: Commit advanced high-water mark every N successfully processed records
 #: so a crash mid-run doesn't force reprocessing the whole page next tick.
 HWM_CHECKPOINT_EVERY = 50
+
+#: Quota guards that end the whole run, even when they fire part-way
+#: through one record (e.g. on a grid query in ``after_upsert``). Never
+#: swallow these per record: on 2026-06-29 the per-tick budget ran out
+#: mid-run and every remaining deal was saved and marked Synced without
+#: its income-year / payment grids, then never retried.
+STOP_RUN_ERRORS = (SalesforceBudgetExceeded, SalesforceRateLimitError)
+
+#: A deadlock makes MariaDB roll back the whole transaction, not just the
+#: statement, so everything since the last commit is gone. Never swallow it
+#: per record: on 2026-10-23 a swallowed deadlock undid deal saves while the
+#: sync carried on as if they had been written.
+TRANSACTION_LOST_ERRORS = (frappe.QueryDeadlockError,)
+
+#: ``Salesforce Settings`` field holding, per high-water-mark field, the Id
+#: of the last record synced at exactly that timestamp (see
+#: ``build_incremental_query(after_id=...)``).
+HWM_LAST_IDS_FIELD = "hwm_last_ids"
+
+#: Savepoint wrapping each record in ``run`` so a failed record leaves no
+#: half-written rows behind (its Record Link included).
+RECORD_SAVEPOINT = "sf_sync_record"
 
 #: TEMPORARY STOPGAP — exact error strings from known bugs in *other* apps'
 #: CRM Deal ``on_update`` hooks that otherwise kill the whole deal save.
@@ -65,6 +92,19 @@ def _persist_tolerating_known_hook_bugs(fn) -> None:
             ),
         )
 
+
+def _rollback_record() -> None:
+    """Undo the current record's writes back to ``RECORD_SAVEPOINT``.
+
+    Fails quietly if the savepoint is gone (something committed mid-record,
+    or the database already rolled the transaction back, e.g. a deadlock):
+    there is then nothing left to undo here.
+    """
+    try:
+        frappe.db.rollback(save_point=RECORD_SAVEPOINT)
+    except Exception:
+        pass
+
 #: Tolerate this many consecutive 401s inside the SOQL pagination loop
 #: before aborting the syncer. The client already does one transparent
 #: refresh-and-retry per call; consecutive 401s here mean the refreshed
@@ -90,6 +130,10 @@ class BaseSyncer:
     #: Extra SOQL fields the syncer needs (for ``enrich_values`` /
     #: ``after_upsert``) but that aren't represented as mapping rows.
     extra_soql_fields: ClassVar[tuple[str, ...]] = ()
+    #: If True, an ``after_upsert`` failure fails the whole record instead
+    #: of being logged and ignored. Set it when ``after_upsert`` writes data
+    #: the record is incomplete without (e.g. the Opportunity grids).
+    after_upsert_required: ClassVar[bool] = False
 
     def __init__(self, client: SalesforceClient, log_item: Any):
         self.client = client
@@ -102,14 +146,18 @@ class BaseSyncer:
     # ------------------------------------------------------------------
     def run(self) -> None:
         since = self._get_high_water_mark()
+        last_id = self._get_last_id(since)
         soql = build_incremental_query(
             sobject=self.salesforce_object,
             fields=self._soql_fields(),
             since=since,
             extra_where=self.extra_where,
+            after_id=last_id,
         )
         self.log.soql = soql
         new_hwm = get_datetime(since).replace(tzinfo=None) if since else None
+        # The mark as last committed: where a lost transaction rewinds to.
+        committed = (new_hwm, last_id)
         calls_before = self.client.calls_this_tick
         processed_since_checkpoint = 0
         auth_failures = 0
@@ -148,31 +196,55 @@ class BaseSyncer:
                         continue
                     raise
 
+                frappe.db.savepoint(RECORD_SAVEPOINT)
                 try:
                     auth_failures = 0  # any successful fetch resets the counter
                     self._process_record(rec)
                     self.log.fetched = (self.log.fetched or 0) + 1
                     modstamp = get_datetime(rec["SystemModstamp"]).replace(tzinfo=None)
-                    if new_hwm is None or modstamp > new_hwm:
+                    # ``>=``: records come sorted by (SystemModstamp, Id), so
+                    # within one timestamp the latest record wins the Id.
+                    if new_hwm is None or modstamp >= new_hwm:
                         new_hwm = modstamp
+                        last_id = rec["Id"]
                     processed_since_checkpoint += 1
                     if processed_since_checkpoint >= HWM_CHECKPOINT_EVERY:
-                        self._set_high_water_mark(new_hwm)
+                        self._set_high_water_mark(new_hwm, last_id)
                         frappe.db.commit()
+                        committed = (new_hwm, last_id)
                         processed_since_checkpoint = 0
+                except STOP_RUN_ERRORS:
+                    # Undo the half-done record and end the run. The mark in
+                    # ``finally`` stays on the last complete record (its
+                    # timestamp and Id), so the next tick picks this one up
+                    # again even if it shares that timestamp.
+                    _rollback_record()
+                    raise
+                except TRANSACTION_LOST_ERRORS:
+                    raise  # not this record's fault; handled below
                 except Exception as e:
+                    # Roll back before logging: Error Log rows are written in
+                    # this same transaction.
+                    _rollback_record()
                     self.log.failed = (self.log.failed or 0) + 1
                     frappe.log_error(
                         title=f"SF sync {self.salesforce_object} record {rec.get('Id')}",
                         message=frappe.get_traceback() or str(e),
                     )
+                    self._mark_link_failed(rec.get("Id"), e)
+        except TRANSACTION_LOST_ERRORS:
+            # The records since the last checkpoint were rolled back with the
+            # transaction, so put the mark back there and end the run; the
+            # next tick redoes them.
+            new_hwm, last_id = committed
+            raise
         finally:
             # Always record API calls spent by this syncer and persist the
             # latest HWM we safely reached — even if the loop aborted due
             # to a budget/quota exception higher up the stack.
             self.log.api_calls_used = self.client.calls_this_tick - calls_before
             if new_hwm is not None:
-                self._set_high_water_mark(new_hwm)
+                self._set_high_water_mark(new_hwm, last_id)
 
     # ------------------------------------------------------------------
     # Per-record processing
@@ -202,9 +274,13 @@ class BaseSyncer:
             if doc is not None:
                 try:
                     self.after_upsert(rec, doc)
+                except (*STOP_RUN_ERRORS, *TRANSACTION_LOST_ERRORS):
+                    raise
                 except Exception as e:
-                    # after_upsert side-effects (e.g. address upsert) must
-                    # not fail the whole record sync.
+                    if self.after_upsert_required:
+                        raise
+                    # Optional side-effects (e.g. address upsert) must not
+                    # fail the whole record sync.
                     frappe.log_error(
                         title=f"SF after_upsert {self.salesforce_object} {sf_id}",
                         message=frappe.get_traceback() or str(e),
@@ -478,12 +554,71 @@ class BaseSyncer:
             transformed = self._truncate_to_max_length(
                 row.frappe_field, transformed, sf_id=rec.get("Id")
             )
+            transformed = self._drop_invalid_emails(
+                row.frappe_field, transformed, sf_id=rec.get("Id")
+            )
             values[row.frappe_field] = transformed
         return values
 
     # Cache target-field metadata per syncer instance to avoid repeated
     # ``frappe.get_meta`` calls (one per record per row otherwise).
     _max_length_cache: dict[str, int | None]
+
+    def _drop_invalid_emails(
+        self, frappe_field: str, value: Any, sf_id: str | None = None
+    ) -> Any:
+        """Drop email addresses Frappe would refuse, so the record still loads.
+
+        Frappe won't save an Email field holding an invalid address, and that
+        fails the whole record: on 2026-10-27 addresses like
+        ``joe..philp.hs@live.co.uk`` kept 4 contacts and a lead out of CRM.
+        Each dropped address is logged with the record's Salesforce Id.
+        """
+        if isinstance(value, list):
+            # Child-table rows, e.g. Contact.email_ids from ``email_table``.
+            if not any(isinstance(r, dict) and "email_id" in r for r in value):
+                return value
+            kept = []
+            for row in value:
+                if isinstance(row, dict) and "email_id" in row:
+                    valid, dropped = _split_valid_emails(row["email_id"])
+                    if dropped:
+                        self._log_dropped_email(frappe_field, ", ".join(dropped), sf_id)
+                        row["email_id"] = valid
+                    if not valid:
+                        continue
+                kept.append(row)
+            if kept and not any(r.get("is_primary") for r in kept):
+                kept[0]["is_primary"] = 1
+            return kept or None
+        if not isinstance(value, str) or not value or not self._is_email_field(frappe_field):
+            return value
+        valid, dropped = _split_valid_emails(value)
+        if not dropped:
+            return value
+        self._log_dropped_email(frappe_field, ", ".join(dropped), sf_id)
+        return valid or None
+
+    def _is_email_field(self, frappe_field: str) -> bool:
+        cache = self.__dict__.setdefault("_email_field_cache", {})
+        if frappe_field not in cache:
+            try:
+                df = frappe.get_meta(self.frappe_doctype).get_field(frappe_field)
+                cache[frappe_field] = bool(df and df.options == "Email")
+            except Exception:
+                cache[frappe_field] = False
+        return cache[frappe_field]
+
+    def _log_dropped_email(self, frappe_field: str, value: str, sf_id: str | None) -> None:
+        frappe.log_error(
+            title=f"SF invalid email dropped: {self.salesforce_object} {sf_id or '?'}",
+            message=(
+                f"{value!r} is not a valid email address, so it was left out of "
+                f"{self.frappe_doctype}.{frappe_field} and the record was saved "
+                f"without it. Correct it in Salesforce and the next sync of "
+                f"this record brings it across."
+            ),
+        )
 
     def _truncate_to_max_length(
         self, frappe_field: str, value: Any, sf_id: str | None = None
@@ -555,10 +690,32 @@ class BaseSyncer:
         # explicit "Backfill From Date" action on Salesforce Settings.
         return str(now_datetime())
 
-    def _set_high_water_mark(self, value) -> None:
+    def _get_last_id(self, since: str) -> str | None:
+        """Id of the last record synced at exactly ``since``, if recorded.
+
+        Only trusted while the mark is unchanged: an operator reset
+        (backfill from a date, reset to epoch) moves the mark and so
+        drops it.
+        """
+        entry = _load_last_ids().get(self.high_water_field) or {}
+        if not (entry.get("id") and entry.get("at")):
+            return None
+        if get_datetime(entry["at"]) != get_datetime(since):
+            return None
+        return entry["id"]
+
+    def _set_high_water_mark(self, value, last_id: str | None = None) -> None:
         if not self.high_water_field:
             return
         frappe.db.set_single_value("Salesforce Settings", self.high_water_field, value)
+        last_ids = _load_last_ids()
+        if last_id:
+            last_ids[self.high_water_field] = {"at": str(value), "id": last_id}
+        else:
+            last_ids.pop(self.high_water_field, None)
+        frappe.db.set_single_value(
+            "Salesforce Settings", HWM_LAST_IDS_FIELD, json.dumps(last_ids)
+        )
 
     # ------------------------------------------------------------------
     # Record Link helpers
@@ -582,8 +739,75 @@ class BaseSyncer:
                 "frappe_doctype": self.frappe_doctype,
             }
         )
-        doc.insert(ignore_permissions=True)
+        try:
+            doc.insert(ignore_permissions=True)
+        except frappe.UniqueValidationError:
+            # Another run inserted this link between our lookup and insert;
+            # the unique key on (salesforce_object, salesforce_id) refused
+            # the duplicate, so use theirs. ``for_update`` makes this a
+            # locking read, which sees their committed row; a plain read
+            # would reuse this transaction's REPEATABLE READ snapshot, taken
+            # before they committed.
+            name = frappe.db.get_value(
+                "Salesforce Record Link",
+                {
+                    "salesforce_id": salesforce_id,
+                    "salesforce_object": self.salesforce_object,
+                },
+                "name",
+                for_update=True,
+            )
+            if not name:
+                raise
+            return frappe.get_doc("Salesforce Record Link", name)
         return doc
+
+    def _mark_link_failed(self, salesforce_id: str | None, error: Exception) -> None:
+        """Flag a failed record on its link so it can be found and retried.
+
+        Called after the record's rollback, so the failed attempt's own
+        writes are already gone. A link that was Synced before keeps its
+        ``frappe_name``; only its status changes.
+        """
+        if not salesforce_id:
+            return
+        try:
+            link = self._get_or_create_link(salesforce_id)
+            link.sync_status = "Failed"
+            link.error_message = str(error)[:1000]
+            link.save(ignore_permissions=True)
+        except TRANSACTION_LOST_ERRORS:
+            # The rollback took the records since the last checkpoint with
+            # it; let ``run`` rewind the mark instead of moving past them.
+            raise
+        except Exception:
+            # Bookkeeping only; the Error Log already holds the failure.
+            pass
+
+
+def _split_valid_emails(value: str | None) -> tuple[str, list[str]]:
+    """``value`` without the addresses Frappe would refuse, and those addresses.
+
+    Frappe checks each address in an Email field on save (``split_emails``),
+    so ``a@x.com, bad@@x`` still fails the record even though
+    ``validate_email_address`` on the whole string returns ``a@x.com``.
+    """
+    kept, dropped = [], []
+    for address in split_emails(value):
+        (kept if validate_email_address(address) else dropped).append(address)
+    return ", ".join(kept), dropped
+
+
+def _load_last_ids() -> dict:
+    """``Salesforce Settings.hwm_last_ids``, read fresh (not the cached doc)."""
+    try:
+        raw = frappe.db.get_single_value("Salesforce Settings", HWM_LAST_IDS_FIELD)
+        value = json.loads(raw) if raw else {}
+    except Exception:
+        # Field not migrated yet, or unreadable: fall back to the plain
+        # timestamp mark.
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _split_sf_fields(value: str | None) -> list[str]:
