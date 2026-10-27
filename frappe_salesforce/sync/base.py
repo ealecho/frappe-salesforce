@@ -6,7 +6,7 @@ import json
 from typing import Any, ClassVar
 
 import frappe
-from frappe.utils import get_datetime, now_datetime
+from frappe.utils import get_datetime, now_datetime, validate_email_address
 
 from frappe_salesforce.salesforce.client import SalesforceClient
 from frappe_salesforce.salesforce.exceptions import (
@@ -554,12 +554,67 @@ class BaseSyncer:
             transformed = self._truncate_to_max_length(
                 row.frappe_field, transformed, sf_id=rec.get("Id")
             )
+            transformed = self._drop_invalid_emails(
+                row.frappe_field, transformed, sf_id=rec.get("Id")
+            )
             values[row.frappe_field] = transformed
         return values
 
     # Cache target-field metadata per syncer instance to avoid repeated
     # ``frappe.get_meta`` calls (one per record per row otherwise).
     _max_length_cache: dict[str, int | None]
+
+    def _drop_invalid_emails(
+        self, frappe_field: str, value: Any, sf_id: str | None = None
+    ) -> Any:
+        """Drop email addresses Frappe would refuse, so the record still loads.
+
+        Frappe won't save an Email field holding an invalid address, and that
+        fails the whole record: on 2026-10-27 addresses like
+        ``joe..philp.hs@live.co.uk`` kept 4 contacts and a lead out of CRM.
+        Each dropped address is logged with the record's Salesforce Id.
+        """
+        if isinstance(value, list):
+            # Child-table rows, e.g. Contact.email_ids from ``email_table``.
+            if not any(isinstance(r, dict) and "email_id" in r for r in value):
+                return value
+            kept = []
+            for row in value:
+                if isinstance(row, dict) and "email_id" in row:
+                    if not validate_email_address(row["email_id"]):
+                        self._log_dropped_email(frappe_field, row["email_id"], sf_id)
+                        continue
+                kept.append(row)
+            if kept and not any(r.get("is_primary") for r in kept):
+                kept[0]["is_primary"] = 1
+            return kept or None
+        if not isinstance(value, str) or not value or not self._is_email_field(frappe_field):
+            return value
+        if validate_email_address(value):
+            return value
+        self._log_dropped_email(frappe_field, value, sf_id)
+        return None
+
+    def _is_email_field(self, frappe_field: str) -> bool:
+        cache = self.__dict__.setdefault("_email_field_cache", {})
+        if frappe_field not in cache:
+            try:
+                df = frappe.get_meta(self.frappe_doctype).get_field(frappe_field)
+                cache[frappe_field] = bool(df and df.options == "Email")
+            except Exception:
+                cache[frappe_field] = False
+        return cache[frappe_field]
+
+    def _log_dropped_email(self, frappe_field: str, value: str, sf_id: str | None) -> None:
+        frappe.log_error(
+            title=f"SF invalid email dropped: {self.salesforce_object} {sf_id or '?'}",
+            message=(
+                f"{value!r} is not a valid email address, so it was left out of "
+                f"{self.frappe_doctype}.{frappe_field} and the record was saved "
+                f"without it. Correct it in Salesforce and the next sync of "
+                f"this record brings it across."
+            ),
+        )
 
     def _truncate_to_max_length(
         self, frappe_field: str, value: Any, sf_id: str | None = None

@@ -50,6 +50,15 @@
   records that were rolled back; `resync_opportunities` marks that deal
   Failed. The usage is now one write without a `modified` bump, so it
   contends less with other writers of Salesforce Settings.
+- An invalid email address no longer keeps a record out of CRM. Frappe
+  refuses addresses like `joe..philp.hs@live.co.uk`, which failed the
+  whole Contact or Lead (4 contacts and a lead on 27 Oct). The sync now
+  drops the address, saves the record without it and logs it with the
+  Salesforce Id. Plain-text `custom_sf_*` email copies are untouched.
+- `custom_sf_email_bounced_reason` on Contact and CRM Lead is now Small
+  Text (patch `widen_email_bounced_reason`). Bounce messages carry
+  `<addresses>`: the sync truncated them to 140 chars, then the save
+  escaped `<` to `&lt;` and the value overflowed again.
 
 ### Added
 - `reload_unlinked_records` loads the Accounts, Contacts and Leads whose
