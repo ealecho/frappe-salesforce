@@ -15,7 +15,7 @@ import frappe  # noqa: E402
 from frappe_salesforce.api import sync as api  # noqa: E402
 from frappe_salesforce.salesforce import client as client_module  # noqa: E402
 from frappe_salesforce.salesforce.exceptions import SalesforceBudgetExceeded  # noqa: E402
-from frappe_salesforce.sync import opportunities  # noqa: E402
+from frappe_salesforce.sync import accounts, contacts, leads, opportunities  # noqa: E402
 from frappe_salesforce.tasks import incremental  # noqa: E402
 
 PER_TICK = 20
@@ -42,6 +42,9 @@ class _BudgetedClient:
 
 
 class _FakeSyncer:
+    salesforce_object = "Opportunity"
+    extra_where = None
+
     def __init__(self, client, log):
         self.client = client
         self.processed = []
@@ -153,3 +156,60 @@ def test_lock_wait_takes_the_lock_once_the_tick_ends(monkeypatch):
     monkeypatch.setattr(incremental, "_acquire_sync_lock", lambda: next(attempts))
     monkeypatch.setattr(incremental.time, "sleep", lambda s: None)
     assert incremental.acquire_sync_lock_waiting(timeout=120) is True
+
+
+class _ReloadClient(_BudgetedClient):
+    """Answers the deal lookup by account / contact, else returns the ids asked for."""
+
+    soql: list = []
+
+    def query(self, soql):
+        type(self).soql.append(soql)
+        if "WHERE AccountId IN" in soql:
+            return iter([{"Id": "006X"}])
+        if "WHERE ContactId IN" in soql:
+            return iter([{"Id": "006X"}, {"Id": "006Y"}])  # 006X twice: once is enough
+        return super().query(soql)
+
+
+def test_reload_loads_unlinked_records_in_order_then_their_deals(site, lock, monkeypatch):
+    processed = []
+    blank = {"Account": ["001A"], "Contact": ["003A", "003B"], "Lead": ["00QA"]}
+
+    def fake(obj, where=None):
+        return type(
+            f"{obj}Syncer",
+            (_FakeSyncer,),
+            {
+                "salesforce_object": obj,
+                "extra_where": where,
+                "_process_record": lambda self, rec: processed.append(rec["Id"]),
+            },
+        )
+
+    monkeypatch.setattr(accounts, "AccountSyncer", fake("Account"))
+    monkeypatch.setattr(contacts, "ContactSyncer", fake("Contact"))
+    monkeypatch.setattr(leads, "LeadSyncer", fake("Lead", "IsConverted = false"))
+    monkeypatch.setattr(opportunities, "OpportunitySyncer", fake("Opportunity"))
+    monkeypatch.setattr(
+        frappe, "get_all", lambda doctype, filters, pluck: blank[filters["salesforce_object"]]
+    )
+    _ReloadClient.soql = []
+    monkeypatch.setattr(client_module, "SalesforceClient", _ReloadClient)
+
+    result = api.reload_unlinked_records()
+
+    # Organisations before contacts, so contacts can link to them.
+    assert processed == ["001A", "003A", "003B", "00QA", "006X", "006Y"]
+    assert result["Contact"] == {"matched": 2, "processed": 2, "failed": 0}
+    assert result["Opportunity"] == {"matched": 2, "processed": 2, "failed": 0}
+    assert result["stopped"] is None
+    assert any("FROM Lead WHERE (IsConverted = false) AND Id IN" in q for q in _ReloadClient.soql)
+    assert not lock["held"]
+
+
+def test_reload_stops_before_any_call_when_a_tick_holds_the_lock(site, lock):
+    lock["held"] = True
+    result = api.reload_unlinked_records()
+    assert result["ok"] is False
+    assert _BudgetedClient.created == 0

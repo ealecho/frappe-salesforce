@@ -51,6 +51,15 @@
   Failed. The usage is now one write without a `modified` bump, so it
   contends less with other writers of Salesforce Settings.
 
+### Added
+- `reload_unlinked_records` loads the Accounts, Contacts and Leads whose
+  Salesforce Record Link points at nothing, then re-syncs the
+  Opportunities of those accounts and contacts. The overlapping first
+  loads on 14 May left such links marked Synced with no record behind
+  them (77 Accounts, 1,522 Contacts and 259 Leads on staging, all still
+  live in Salesforce), and the high-water marks had moved past them. It
+  holds the sync lock and shares its loop with `resync_opportunities`.
+
 ### Changed
 - Salesforce Record Link now has a unique key on
   `(salesforce_object, salesforce_id)`. A migrate patch first deletes
