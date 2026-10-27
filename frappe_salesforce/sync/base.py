@@ -772,6 +772,10 @@ class BaseSyncer:
             link.sync_status = "Failed"
             link.error_message = str(error)[:1000]
             link.save(ignore_permissions=True)
+        except TRANSACTION_LOST_ERRORS:
+            # The rollback took the records since the last checkpoint with
+            # it; let ``run`` rewind the mark instead of moving past them.
+            raise
         except Exception:
             # Bookkeeping only; the Error Log already holds the failure.
             pass

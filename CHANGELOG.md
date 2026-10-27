@@ -48,7 +48,8 @@
   reaches the caller. A sync run that hits one moves its high-water mark
   back to the last checkpoint and stops, so the next tick redoes the
   records that were rolled back; `resync_opportunities` marks that deal
-  Failed. The usage is now one write without a `modified` bump, so it
+  Failed. The same applies when flagging a failed record's link hits a
+  deadlock. The usage is now one write without a `modified` bump, so it
   contends less with other writers of Salesforce Settings.
 - An invalid email address no longer keeps a record out of CRM. Frappe
   refuses addresses like `joe..philp.hs@live.co.uk`, which failed the

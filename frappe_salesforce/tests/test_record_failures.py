@@ -243,3 +243,46 @@ def test_deadlock_before_any_checkpoint_keeps_the_starting_mark(monkeypatch, err
     with pytest.raises(frappe.QueryDeadlockError):
         syncer.run()
     assert events[-1] == ("hwm", "2026-06-01 00:00:00", None)
+
+
+class _LinkSaveFails(_FakeLink):
+    def __init__(self, error):
+        super().__init__()
+        self.error = error
+
+    def save(self, **kwargs):
+        raise self.error
+
+
+def test_deadlock_while_flagging_a_failed_record_rewinds_the_mark(monkeypatch, errors):
+    # 006C fails, then flagging its link deadlocks, which rolls back 006C's
+    # Error Log and the uncommitted work since the checkpoint after 006B.
+    monkeypatch.setattr(base, "HWM_CHECKPOINT_EVERY", 2)
+    records = [
+        _rec("006A", "2026-06-29T07:40:00Z"),
+        _rec("006B", "2026-06-29T07:41:00Z"),
+        _rec("006C", "2026-06-29T07:42:00Z"),
+        _rec("006D", "2026-06-29T07:43:00Z"),
+    ]
+    syncer = _syncer(BaseSyncer, monkeypatch, records)
+    events = _run_setup(monkeypatch, syncer)
+    monkeypatch.setattr(syncer, "_mark_link_failed", BaseSyncer._mark_link_failed.__get__(syncer))
+    monkeypatch.setattr(syncer, "_get_or_create_link", lambda sf_id: _LinkSaveFails(_deadlock()))
+    seen = []
+
+    def process(rec):
+        seen.append(rec["Id"])
+        if rec["Id"] == "006C":
+            raise ValueError("bad record")
+
+    monkeypatch.setattr(syncer, "_process_record", process)
+    with pytest.raises(frappe.QueryDeadlockError):
+        syncer.run()
+    assert seen == ["006A", "006B", "006C"]  # the run stopped
+    assert events[-1] == ("hwm", "2026-06-29 07:41:00", "006B")
+
+
+def test_other_errors_while_flagging_a_failed_record_are_swallowed(monkeypatch):
+    syncer = _syncer(BaseSyncer, monkeypatch)
+    monkeypatch.setattr(syncer, "_get_or_create_link", lambda sf_id: _LinkSaveFails(RuntimeError("link save failed")))
+    syncer._mark_link_failed("006A", ValueError("bad record"))  # no raise
