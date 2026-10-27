@@ -71,3 +71,19 @@ def test_email_table_with_only_invalid_addresses_becomes_empty(syncer, logged):
 def test_other_child_tables_are_left_alone(syncer, logged):
     rows = [{"phone": "+44 1234", "is_primary_phone": 1}]
     assert syncer._drop_invalid_emails("phone_nos", rows) == rows
+
+
+def test_only_the_invalid_address_of_several_is_dropped(syncer, logged):
+    # validate_email_address("a, bad") returns "a", but Frappe checks each
+    # address on save, so the bad one must go.
+    value = "joe.philp@live.co.uk, joe..philp.hs@live.co.uk"
+    assert syncer._drop_invalid_emails("email", value, "00QA") == "joe.philp@live.co.uk"
+    assert "joe..philp.hs@live.co.uk" in logged[0]["message"]
+
+
+def test_email_row_with_several_addresses_keeps_the_valid_ones(syncer, logged):
+    rows = [{"email_id": "kiingi@yahoo.com,kiingigut.@yahoo.com", "is_primary": 1}]
+    assert syncer._drop_invalid_emails("email_ids", rows, "003A") == [
+        {"email_id": "kiingi@yahoo.com", "is_primary": 1}
+    ]
+    assert len(logged) == 1

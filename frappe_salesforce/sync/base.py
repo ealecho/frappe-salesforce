@@ -6,7 +6,7 @@ import json
 from typing import Any, ClassVar
 
 import frappe
-from frappe.utils import get_datetime, now_datetime, validate_email_address
+from frappe.utils import get_datetime, now_datetime, split_emails, validate_email_address
 
 from frappe_salesforce.salesforce.client import SalesforceClient
 from frappe_salesforce.salesforce.exceptions import (
@@ -581,8 +581,11 @@ class BaseSyncer:
             kept = []
             for row in value:
                 if isinstance(row, dict) and "email_id" in row:
-                    if not validate_email_address(row["email_id"]):
-                        self._log_dropped_email(frappe_field, row["email_id"], sf_id)
+                    valid, dropped = _split_valid_emails(row["email_id"])
+                    if dropped:
+                        self._log_dropped_email(frappe_field, ", ".join(dropped), sf_id)
+                        row["email_id"] = valid
+                    if not valid:
                         continue
                 kept.append(row)
             if kept and not any(r.get("is_primary") for r in kept):
@@ -590,10 +593,11 @@ class BaseSyncer:
             return kept or None
         if not isinstance(value, str) or not value or not self._is_email_field(frappe_field):
             return value
-        if validate_email_address(value):
+        valid, dropped = _split_valid_emails(value)
+        if not dropped:
             return value
-        self._log_dropped_email(frappe_field, value, sf_id)
-        return None
+        self._log_dropped_email(frappe_field, ", ".join(dropped), sf_id)
+        return valid or None
 
     def _is_email_field(self, frappe_field: str) -> bool:
         cache = self.__dict__.setdefault("_email_field_cache", {})
@@ -779,6 +783,19 @@ class BaseSyncer:
         except Exception:
             # Bookkeeping only; the Error Log already holds the failure.
             pass
+
+
+def _split_valid_emails(value: str | None) -> tuple[str, list[str]]:
+    """``value`` without the addresses Frappe would refuse, and those addresses.
+
+    Frappe checks each address in an Email field on save (``split_emails``),
+    so ``a@x.com, bad@@x`` still fails the record even though
+    ``validate_email_address`` on the whole string returns ``a@x.com``.
+    """
+    kept, dropped = [], []
+    for address in split_emails(value):
+        (kept if validate_email_address(address) else dropped).append(address)
+    return ", ".join(kept), dropped
 
 
 def _load_last_ids() -> dict:

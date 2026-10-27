@@ -55,7 +55,8 @@
   refuses addresses like `joe..philp.hs@live.co.uk`, which failed the
   whole Contact or Lead (4 contacts and a lead on 27 Oct). The sync now
   drops the address, saves the record without it and logs it with the
-  Salesforce Id. Plain-text `custom_sf_*` email copies are untouched.
+  Salesforce Id. A value holding several addresses keeps the valid ones.
+  Plain-text `custom_sf_*` email copies are untouched.
 - `custom_sf_email_bounced_reason` on Contact and CRM Lead is now Small
   Text (patch `widen_email_bounced_reason`). Bounce messages carry
   `<addresses>`: the sync truncated them to 140 chars, then the save
